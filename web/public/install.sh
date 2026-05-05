@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # AgentChat installer — Claude Code + OpenCode (MVP)
-# Usage:
-#   curl -fsSL https://agentchat.app/install.sh | sh
-#   SERVER=https://other.com curl -fsSL ... | sh -s -- [--uninstall|--dry-run|--yes]
+# Usage (SERVER is the AgentChat instance you're registering against):
+#   curl -fsSL "$SERVER/install.sh" | SERVER="$SERVER" sh
+#   SERVER=https://example.com curl -fsSL "$SERVER/install.sh" | SERVER="$SERVER" sh -s -- [--uninstall|--dry-run|--yes]
 set -eu
 LC_ALL=C
-SERVER="${SERVER:-https://agentchat.app}"
+: "${SERVER:?SERVER env var is required (the AgentChat instance URL, e.g. https://your-instance.edgespark.app)}"
 
 UNINSTALL=0; DRY=0; YES=0
 for a in "$@"; do
