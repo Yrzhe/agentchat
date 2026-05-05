@@ -1,45 +1,47 @@
-/**
- * EDGESPARK SERVER
- *
- * Define your Hono routes. The app is static — created once, reused across requests.
- *
- * SDK imports from 'edgespark' are per-request (backed by AsyncLocalStorage).
- * They can ONLY be used inside route handlers, not at the top level.
- *
- * ═══════════════════════════════════════════════════════════════════
- * PATH CONVENTIONS (Authentication)
- *
- * /api/*          → Login required (auth.user guaranteed)
- * /api/public/*   → Login optional (auth.user if logged in)
- * /api/webhooks/* → No auth check (handle verification yourself)
- * ═══════════════════════════════════════════════════════════════════
- */
-
 import { Hono } from "hono";
+import { db as edgesparkDb } from "edgespark";
+import type { DB } from "./core/platform";
+import { makeEdgesparkAuth } from "./adapters/edgespark/auth";
+import { handleMcpRequest } from "./adapters/edgespark/mcp-server";
+import { mountInstallRoutes } from "./install/handlers";
+import { mountStatusRoute } from "./web/status";
+
+function getCtx() {
+  const db = edgesparkDb as unknown as DB;
+  return { db, auth: makeEdgesparkAuth(db) };
+}
 
 const app = new Hono()
-  .get("/api/public/hello", (c) =>
-    c.json({ message: "Hello from EdgeSpark! Spark your idea to the Edge." })
-  );
+  .post("/mcp/:workspaceId", async (c) => {
+    const { db, auth } = getCtx();
+    const workspaceId = c.req.param("workspaceId");
+    const url = new URL(c.req.url);
+    const expectedAud = `${url.origin}/mcp/${workspaceId}`;
+    const tokenHeader = c.req.header("authorization") ?? "";
+    const token = tokenHeader.startsWith("Bearer ") ? tokenHeader.slice(7) : "";
+    const identity = await auth.verifyKey(token, expectedAud);
+    if (!identity || identity.workspaceId !== workspaceId) {
+      return new Response("unauthorized", {
+        status: 401,
+        headers: { "WWW-Authenticate": `Bearer realm="agentchat"` },
+      });
+    }
+    return handleMcpRequest(c.req.raw, {
+      db,
+      workspaceId,
+      userId: identity.userId,
+      headers: {
+        framework: c.req.header("x-agentchat-framework") ?? undefined,
+        frameworkVersion: c.req.header("x-agentchat-framework-version") ?? undefined,
+        deviceId: c.req.header("x-agentchat-device-id") ?? undefined,
+        deviceName: c.req.header("x-agentchat-device-name") ?? undefined,
+        hostSessionId: c.req.header("x-agentchat-host-session") ?? undefined,
+      },
+    });
+  })
+  .get("/api/public/health", (c) => c.json({ ok: true, version: "0.1.0" }));
 
-// Example: Get all posts
-// .get('/api/posts', async (c) => {
-//   const allPosts = await db.select().from(posts);
-//   return c.json({ posts: allPosts });
-// })
-
-// Example: Create post
-// .post('/api/posts', async (c) => {
-//   const data = await c.req.json();
-//   await db.insert(posts).values({ title: data.title, content: data.content });
-//   return c.json({ success: true }, 201);
-// })
-
-// Example: Background task (doesn't block response)
-// .post('/api/analytics', async (c) => {
-//   const event = await c.req.json();
-//   ctx.runInBackground(logEvent(event));
-//   return c.json({ ok: true });
-// })
+mountInstallRoutes(app, getCtx);
+mountStatusRoute(app, getCtx);
 
 export default app;
