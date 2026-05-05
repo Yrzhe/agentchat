@@ -144,7 +144,7 @@ import sys, urllib.parse
 print(urllib.parse.urlencode(dict(zip(["origin","cwd","alias","framework","device_name","callback"], sys.argv[1:]))))
 PY
 )"
-  AUTH_URL="$SERVER/install?$Q"
+  AUTH_URL="$SERVER/api/install?$Q"
 
   log "Opening browser to authorize: $AUTH_URL"
   if command -v open >/dev/null 2>&1; then open "$AUTH_URL"; elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$AUTH_URL"; fi

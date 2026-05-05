@@ -8,7 +8,7 @@ export function mountInstallRoutes(
   app: Hono,
   ctxFn: () => { db: DB; auth: AuthAdapter }
 ): void {
-  app.get("/install", async (c) => {
+  app.get("/api/install", async (c) => {
     const { auth } = ctxFn();
     const me = await auth.currentUser(c.req.raw);
     if (!me) {
@@ -67,7 +67,7 @@ export function mountInstallRoutes(
     const token = randomToken(64);
     const hash = await sha256Hex(token);
     const url = new URL(c.req.url);
-    const audience = `${url.origin}/mcp/${workspaceId}`;
+    const audience = `${url.origin}/api/webhooks/mcp/${workspaceId}`;
     await db.run(sql`INSERT INTO api_keys (id, hash, user_id, workspace_id, scope, audience)
       VALUES (${crypto.randomUUID()}, ${hash}, ${me.id}, ${workspaceId},
               ${"workspace:" + workspaceId}, ${audience})`);

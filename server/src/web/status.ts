@@ -7,7 +7,7 @@ export function mountStatusRoute(
   app: Hono,
   ctxFn: () => { db: DB; auth: AuthAdapter }
 ): void {
-  app.get("/w/:workspaceId/status", async (c) => {
+  app.get("/api/w/:workspaceId/status", async (c) => {
     const { db, auth } = ctxFn();
     const me = await auth.currentUser(c.req.raw);
     if (!me) {

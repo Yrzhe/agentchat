@@ -5,7 +5,6 @@ import { makeEdgesparkAuth } from "./adapters/edgespark/auth";
 import { handleMcpRequest } from "./adapters/edgespark/mcp-server";
 import { mountInstallRoutes } from "./install/handlers";
 import { mountStatusRoute } from "./web/status";
-import { mountLandingRoute } from "./web/landing";
 
 function getCtx() {
   const db = edgesparkDb as unknown as DB;
@@ -13,11 +12,11 @@ function getCtx() {
 }
 
 const app = new Hono()
-  .post("/mcp/:workspaceId", async (c) => {
+  .post("/api/webhooks/mcp/:workspaceId", async (c) => {
     const { db, auth } = getCtx();
     const workspaceId = c.req.param("workspaceId");
     const url = new URL(c.req.url);
-    const expectedAud = `${url.origin}/mcp/${workspaceId}`;
+    const expectedAud = `${url.origin}/api/webhooks/mcp/${workspaceId}`;
     const tokenHeader = c.req.header("authorization") ?? "";
     const token = tokenHeader.startsWith("Bearer ") ? tokenHeader.slice(7) : "";
     const identity = await auth.verifyKey(token, expectedAud);
@@ -44,6 +43,5 @@ const app = new Hono()
 
 mountInstallRoutes(app, getCtx);
 mountStatusRoute(app, getCtx);
-mountLandingRoute(app);
 
 export default app;
