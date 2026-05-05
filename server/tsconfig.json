@@ -21,6 +21,6 @@
       "edgespark/*": ["./src/__generated__/edgespark.d.ts"]
     }
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "tests/**/*"],
   "exclude": ["node_modules"]
 }
