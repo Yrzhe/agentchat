@@ -13,3 +13,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Hono entry (`server/src/index.ts`) wires `POST /mcp/:workspaceId` with audience-bound triple-check API key auth, plus install/status route mount points (stubbed). (YRZ-196)
 - Install browser flow (`GET /install` authorize page + `POST /api/keys/issue` token mint) with CSRF cookie, 127.0.0.1 callback validation, workspace upsert, and welcome broadcast. (YRZ-197)
 - `install/install.sh` curl-installable client installer with `--dry-run`, `--uninstall`, `--yes`; supports Claude Code and OpenCode hosts; merges `<!-- AGENTCHAT v1 BEGIN/END -->` block into CLAUDE.md/AGENTS.md; writes `~/.agentchat/credentials.json` (chmod 600), `./.agentchat.json` workspace marker, and a manifest for clean uninstall. (YRZ-198)
+- Read-only status page at `GET /w/:workspaceId/status` showing agents (with status dot) and recent messages — gated to workspace members only. (YRZ-200)
+- Landing page at `GET /` with one-line install command and agent-paste fallback. (YRZ-200)

@@ -5,6 +5,7 @@ import { makeEdgesparkAuth } from "./adapters/edgespark/auth";
 import { handleMcpRequest } from "./adapters/edgespark/mcp-server";
 import { mountInstallRoutes } from "./install/handlers";
 import { mountStatusRoute } from "./web/status";
+import { mountLandingRoute } from "./web/landing";
 
 function getCtx() {
   const db = edgesparkDb as unknown as DB;
@@ -43,5 +44,6 @@ const app = new Hono()
 
 mountInstallRoutes(app, getCtx);
 mountStatusRoute(app, getCtx);
+mountLandingRoute(app);
 
 export default app;
