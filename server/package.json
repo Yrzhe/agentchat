@@ -1,0 +1,21 @@
+{
+  "name": "agentchat-server",
+  "version": "1.0.0",
+  "description": "EdgeSpark user code template for AI coding agents",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.17"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260505.1",
+    "@types/node": "^22.19.17",
+    "drizzle-kit": "^0.30.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.5"
+  }
+}
