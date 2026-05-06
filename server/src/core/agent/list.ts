@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { DB } from "../platform";
-import { sweepStatuses } from "./register";
+import { liveStatusSql, liveStatusWhere, type LiveStatus } from "./status";
 
 export interface AgentListItem {
   agent_id: string;
@@ -8,23 +8,28 @@ export interface AgentListItem {
   device_id: string;
   device_name: string | null;
   host_session_id: string | null;
-  status: string;
+  status: LiveStatus;
   last_seen: number;
   cwd: string | null;
 }
 
+/**
+ * List agents in a workspace. Status is computed live from `last_heartbeat_at`
+ * — no write is performed on this read path.
+ */
 export async function listAgents(
   db: DB,
   workspaceId: string,
-  filter: { status?: string; framework?: string; deviceId?: string }
+  filter: { status?: LiveStatus; framework?: string; deviceId?: string }
 ): Promise<AgentListItem[]> {
-  await sweepStatuses(db);
+  const now = Date.now();
   const rows = (await db.all(sql`
-    SELECT id AS agent_id, framework, device_id, device_name, host_session_id, status,
+    SELECT id AS agent_id, framework, device_id, device_name, host_session_id,
+           ${liveStatusSql(now)} AS status,
            last_heartbeat_at AS last_seen, cwd
     FROM agents
     WHERE workspace_id = ${workspaceId}
-      ${filter.status ? sql`AND status = ${filter.status}` : sql``}
+      ${filter.status ? sql`AND ${liveStatusWhere(filter.status, now)}` : sql``}
       ${filter.framework ? sql`AND framework = ${filter.framework}` : sql``}
       ${filter.deviceId ? sql`AND device_id = ${filter.deviceId}` : sql``}
     ORDER BY last_heartbeat_at DESC

@@ -3,6 +3,8 @@ import { sql } from "drizzle-orm";
 import { html } from "hono/html";
 import type { DB, AuthAdapter } from "../core/platform";
 import { sendMessage, SendError } from "../core/chat/send";
+import { isSameOriginRequest } from "./csrf";
+import { liveStatusSql } from "../core/agent/status";
 
 export function mountStatusRoute(
   app: Hono,
@@ -27,7 +29,9 @@ export function mountStatusRoute(
     return c.json({ user: { id: me.id, email: me.email, name: me.name }, workspaces: rows });
   });
 
-  // JSON feed for the workspace chat view (SPA polls this).
+  // JSON feed for the workspace chat view (SPA polls this with If-None-Match).
+  // Returns 304 with no body when nothing changed since the client's ETag, so
+  // most polls are a single cheap summary query (no message/agent payload).
   app.get("/api/w/:workspaceId/feed", async (c) => {
     const { db, auth } = ctxFn();
     const me = await auth.currentUser(c.req.raw);
@@ -39,12 +43,39 @@ export function mountStatusRoute(
     )) as unknown[];
     if (!member.length) return c.json({ error: "not a workspace member" }, 403);
 
+    const summary = (await db.all(sql`
+      SELECT
+        (SELECT MAX(m.created_at) FROM messages m WHERE m.workspace_id = ${wsId}) AS max_msg_at,
+        (SELECT m.id FROM messages m WHERE m.workspace_id = ${wsId}
+           ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS latest_msg_id,
+        (SELECT COUNT(*) FROM messages m WHERE m.workspace_id = ${wsId}) AS msg_count,
+        (SELECT MAX(a.last_heartbeat_at) FROM agents a WHERE a.workspace_id = ${wsId}) AS max_hb,
+        (SELECT COUNT(*) FROM agents a WHERE a.workspace_id = ${wsId}) AS agent_count
+    `)) as Array<{
+      max_msg_at: number | null;
+      latest_msg_id: string | null;
+      msg_count: number;
+      max_hb: number | null;
+      agent_count: number;
+    }>;
+    const s = summary[0];
+    const etag = `W/"${s.max_msg_at ?? 0}-${s.latest_msg_id ?? ""}-${s.msg_count}-${s.max_hb ?? 0}-${s.agent_count}"`;
+    const ifNoneMatch = c.req.header("if-none-match");
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      return new Response(null, {
+        status: 304,
+        headers: { etag, "cache-control": "no-cache, must-revalidate, max-age=0" },
+      });
+    }
+
     const ws = (await db.all(
       sql`SELECT id, name, origin FROM workspaces WHERE id = ${wsId}`
     )) as { id: string; name: string; origin: string | null }[];
 
     const agents = (await db.all(
-      sql`SELECT id, framework, device_name, host_session_id, status, last_heartbeat_at
+      sql`SELECT id, framework, device_name, host_session_id,
+                 ${liveStatusSql()} AS status,
+                 last_heartbeat_at
           FROM agents WHERE workspace_id = ${wsId} ORDER BY last_heartbeat_at DESC`
     )) as Array<{ id: string; framework: string; device_name: string | null; host_session_id: string | null; status: string; last_heartbeat_at: number }>;
 
@@ -57,6 +88,8 @@ export function mountStatusRoute(
           ORDER BY m.created_at DESC LIMIT 100`
     )) as Array<{ id: string; body: string; kind: string; sender_agent_id: string | null; sender_user_id: string | null; created_at: number; sender_user_name: string | null; sender_user_email: string | null }>;
 
+    c.res.headers.set("etag", etag);
+    c.res.headers.set("cache-control", "no-cache, must-revalidate, max-age=0");
     return c.json({
       workspace: ws[0] ?? null,
       agents,
@@ -68,6 +101,7 @@ export function mountStatusRoute(
   // POST a human-authored message into a workspace.
   app.post("/api/w/:workspaceId/messages", async (c) => {
     const { db, auth } = ctxFn();
+    if (!isSameOriginRequest(c.req.raw)) return c.text("forbidden: cross-origin", 403);
     const me = await auth.currentUser(c.req.raw);
     if (!me) return c.text("unauthorized", 401);
     const wsId = c.req.param("workspaceId");
@@ -131,7 +165,9 @@ export function mountStatusRoute(
     )) as { id: string; name: string; origin: string | null }[];
 
     const agents = (await db.all(
-      sql`SELECT id, framework, device_name, host_session_id, status, last_heartbeat_at
+      sql`SELECT id, framework, device_name, host_session_id,
+                 ${liveStatusSql()} AS status,
+                 last_heartbeat_at
           FROM agents WHERE workspace_id = ${wsId} ORDER BY last_heartbeat_at DESC`
     )) as Array<{ id: string; framework: string; device_name: string | null; host_session_id: string | null; status: string; last_heartbeat_at: number }>;
 

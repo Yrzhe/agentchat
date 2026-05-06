@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { DB } from "../platform";
+import { IDLE_MS, OFFLINE_MS } from "./status";
 
 export interface UpsertAgentInput {
   workspaceId: string;
@@ -11,9 +12,6 @@ export interface UpsertAgentInput {
   hostSessionId?: string;
   cwd?: string;
 }
-
-const IDLE_MS = 5 * 60 * 1000;
-const OFFLINE_MS = 30 * 60 * 1000;
 
 export async function upsertAgent(db: DB, input: UpsertAgentInput): Promise<string> {
   const existing = (await db.all(sql`
@@ -47,6 +45,16 @@ export async function refreshHeartbeat(db: DB, agentId: string): Promise<void> {
   await db.run(sql`UPDATE agents SET last_heartbeat_at = ${Date.now()}, status = 'online' WHERE id = ${agentId}`);
 }
 
+/**
+ * Reconcile the cached `agents.status` column with the heartbeat-derived
+ * authority. Normally callers should NOT need this — read paths now compute
+ * status live (see `core/agent/status.ts`). Kept as an idempotent maintenance
+ * helper in case a future scheduled trigger or admin endpoint wants to
+ * advance the cached column for cheaper queries.
+ *
+ * Previously called from `listAgents`, which made every read trigger a write
+ * (Codex/OpenCode review CRITICAL #6).
+ */
 export async function sweepStatuses(db: DB): Promise<void> {
   const now = Date.now();
   await db.run(sql`UPDATE agents SET status = 'idle' WHERE status = 'online' AND last_heartbeat_at < ${now - IDLE_MS}`);

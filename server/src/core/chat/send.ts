@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { DB } from "../platform";
 import { parseMentions, containsBroadcastKeyword } from "./parse";
+import { OFFLINE_MS } from "../agent/status";
 
 export interface SendInput {
   workspaceId: string;
@@ -86,9 +87,11 @@ async function resolveMentions(db: DB, workspaceId: string, handles: string[]): 
       sql`SELECT id FROM agents WHERE workspace_id = ${workspaceId} AND id LIKE ${h + "%"} LIMIT 2`
     )) as { id: string }[];
     if (byPrefix.length === 1) { out.push(byPrefix[0].id); continue; }
+    const offlineCutoff = Date.now() - OFFLINE_MS;
     const byUser = (await db.all(
       sql`SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id
-          WHERE a.workspace_id = ${workspaceId} AND u.name = ${h} AND a.status != ${"offline"}`
+          WHERE a.workspace_id = ${workspaceId} AND u.name = ${h}
+            AND a.last_heartbeat_at >= ${offlineCutoff}`
     )) as { id: string }[];
     for (const r of byUser) out.push(r.id);
   }

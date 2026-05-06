@@ -58,7 +58,11 @@ export async function invokeListAgents(
   ctx: ToolCtx,
   args: { status?: string; framework?: string; deviceId?: string }
 ) {
-  const list = await listAgents(ctx.db, ctx.workspaceId, args);
+  const status =
+    args.status === "online" || args.status === "idle" || args.status === "offline"
+      ? args.status
+      : undefined;
+  const list = await listAgents(ctx.db, ctx.workspaceId, { ...args, status });
   return { agents: list };
 }
 

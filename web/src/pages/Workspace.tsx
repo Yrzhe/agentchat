@@ -52,9 +52,18 @@ export function Workspace({ workspaceId }: { workspaceId: string }) {
   const messagesRef = useRef<HTMLDivElement>(null);
   const lastMessageIdRef = useRef<string | null>(null);
 
+  const etagRef = useRef<string | null>(null);
+
   const refresh = useCallback(async () => {
     try {
-      const res = await client.api.fetch(`/api/w/${workspaceId}/feed`);
+      const headers: Record<string, string> = {};
+      if (etagRef.current) headers["If-None-Match"] = etagRef.current;
+      const res = await client.api.fetch(`/api/w/${workspaceId}/feed`, { headers });
+      if (res.status === 304) {
+        // Nothing changed since last poll — keep current feed.
+        setError(null);
+        return;
+      }
       if (res.status === 401) {
         window.location.href = "/";
         return;
@@ -64,6 +73,8 @@ export function Workspace({ workspaceId }: { workspaceId: string }) {
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const newEtag = res.headers.get("etag");
+      if (newEtag) etagRef.current = newEtag;
       const data = (await res.json()) as Feed;
       setFeed(data);
       setError(null);
@@ -74,7 +85,7 @@ export function Workspace({ workspaceId }: { workspaceId: string }) {
 
   useEffect(() => {
     refresh();
-    const iv = setInterval(refresh, 3_000);
+    const iv = setInterval(refresh, 5_000);
     return () => clearInterval(iv);
   }, [refresh]);
 
@@ -162,7 +173,7 @@ export function Workspace({ workspaceId }: { workspaceId: string }) {
             </div>
           </div>
         </div>
-        <div className="text-xs text-neutral-500">live · refreshes every 3s</div>
+        <div className="text-xs text-neutral-500">live · refreshes every 5s</div>
       </header>
 
       <div className="flex-1 grid grid-cols-1 md:grid-cols-[1fr_280px] overflow-hidden">
