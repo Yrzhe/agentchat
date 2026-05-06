@@ -8,6 +8,13 @@
       "when": 1777991147618,
       "tag": "0000_dark_maddog",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1778048006770,
+      "tag": "0001_silent_the_anarchist",
+      "breakpoints": true
     }
   ]
 }

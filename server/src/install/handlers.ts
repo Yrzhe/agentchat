@@ -4,6 +4,19 @@ import { authorizePage } from "./pages";
 import { deriveWorkspaceId } from "../core/workspace";
 import type { DB, AuthAdapter } from "../core/platform";
 
+const INSTALL_COOKIE = "agentchat_install";
+const CSRF_COOKIE = "agentchat_csrf";
+const COOKIE_TTL_SECONDS = 600;
+
+interface InstallTuple {
+  userId: string;
+  workspaceId: string;
+  alias: string;
+  origin: string;
+  callback: string;
+  csrf: string;
+}
+
 export function mountInstallRoutes(
   app: Hono,
   ctxFn: () => { db: DB; auth: AuthAdapter }
@@ -22,6 +35,10 @@ export function mountInstallRoutes(
     const deviceName = c.req.query("device_name") ?? "unknown";
     const callback = c.req.query("callback") ?? "";
 
+    if (!isValidLoopbackCallback(callback)) {
+      return c.text("Bad request: callback must be http://127.0.0.1:<port>", 400);
+    }
+
     let workspaceId: string;
     try {
       workspaceId = await deriveWorkspaceId(origin, alias);
@@ -30,13 +47,23 @@ export function mountInstallRoutes(
     }
 
     const csrf = crypto.randomUUID();
+    const tuple: InstallTuple = {
+      userId: me.id,
+      workspaceId,
+      alias,
+      origin,
+      callback,
+      csrf,
+    };
+    const tupleEncoded = encodeURIComponent(JSON.stringify(tuple));
+
     c.res.headers.append(
       "set-cookie",
-      `agentchat_csrf=${csrf}; HttpOnly; SameSite=Strict; Path=/; Max-Age=600`
+      `${CSRF_COOKIE}=${csrf}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${COOKIE_TTL_SECONDS}`
     );
     c.res.headers.append(
       "set-cookie",
-      `agentchat_callback=${encodeURIComponent(callback)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=600`
+      `${INSTALL_COOKIE}=${tupleEncoded}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${COOKIE_TTL_SECONDS}`
     );
 
     return c.html(authorizePage({ origin, cwd, framework, deviceName, workspaceId, alias, csrf }));
@@ -47,14 +74,22 @@ export function mountInstallRoutes(
     const me = await auth.currentUser(c.req.raw);
     if (!me) return c.text("unauthorized", 401);
 
-    const body = await c.req.parseBody();
     const cookieHeader = c.req.header("cookie") ?? "";
-    const csrfCookie = cookieHeader.match(/agentchat_csrf=([^;]+)/)?.[1];
-    if (!csrfCookie || csrfCookie !== body["csrf"]) return c.text("csrf mismatch", 403);
+    const tuple = readInstallCookie(cookieHeader);
+    if (!tuple) return c.text("install session missing or expired", 400);
+    if (tuple.userId !== me.id) return c.text("install session user mismatch", 403);
 
-    const workspaceId = String(body["workspace_id"]);
-    const alias = String(body["alias"] ?? workspaceId);
-    const origin = String(body["origin"] ?? "");
+    const body = await c.req.parseBody();
+    const csrfCookie = matchCookie(cookieHeader, CSRF_COOKIE);
+    if (!csrfCookie || csrfCookie !== body["csrf"] || csrfCookie !== tuple.csrf) {
+      return c.text("csrf mismatch", 403);
+    }
+
+    if (!isValidLoopbackCallback(tuple.callback)) {
+      return c.text("invalid callback bound to install session", 400);
+    }
+
+    const { workspaceId, alias, origin, callback } = tuple;
 
     await db.run(sql`INSERT INTO users (id, email, name) VALUES (${me.id}, ${me.email}, ${me.name})
       ON CONFLICT(id) DO UPDATE SET email = excluded.email, name = excluded.name`);
@@ -72,21 +107,63 @@ export function mountInstallRoutes(
       VALUES (${crypto.randomUUID()}, ${hash}, ${me.id}, ${workspaceId},
               ${"workspace:" + workspaceId}, ${audience})`);
 
-    await db.run(sql`INSERT INTO messages (id, workspace_id, sender_user_id, body, kind)
+    await db.run(sql`INSERT INTO messages (id, workspace_id, sender_user_id, body, kind, created_at)
       VALUES (${crypto.randomUUID()}, ${workspaceId}, ${me.id},
-              ${"AgentChat 已激活。试试 send_message 给同 workspace 其他 agent。"}, ${"broadcast"})`);
+              ${"AgentChat 已激活。试试 send_message 给同 workspace 其他 agent。"}, ${"broadcast"},
+              ${Date.now()})`);
 
-    const callbackEnc = cookieHeader.match(/agentchat_callback=([^;]+)/)?.[1] ?? "";
-    const callback = decodeURIComponent(callbackEnc);
-    if (!callback || !callback.startsWith("http://127.0.0.1:")) {
-      return c.text("missing or invalid callback (must be http://127.0.0.1:<port>)", 400);
-    }
     const dest = new URL(callback);
     dest.searchParams.set("token", token);
     dest.searchParams.set("workspace_id", workspaceId);
     dest.searchParams.set("mcp_url", audience);
+
+    c.res.headers.append("set-cookie", `${INSTALL_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+    c.res.headers.append("set-cookie", `${CSRF_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
     return c.redirect(dest.toString());
   });
+}
+
+export function isValidLoopbackCallback(raw: string): boolean {
+  if (!raw) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:") return false;
+  if (parsed.hostname !== "127.0.0.1") return false;
+  if (parsed.username !== "" || parsed.password !== "") return false;
+  if (!parsed.port) return false;
+  const port = Number(parsed.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+  return true;
+}
+
+function matchCookie(header: string, name: string): string | undefined {
+  const re = new RegExp(`(?:^|;\\s*)${name}=([^;]+)`);
+  return header.match(re)?.[1];
+}
+
+function readInstallCookie(header: string): InstallTuple | null {
+  const raw = matchCookie(header, INSTALL_COOKIE);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(decodeURIComponent(raw));
+    if (
+      typeof parsed?.userId === "string" &&
+      typeof parsed?.workspaceId === "string" &&
+      typeof parsed?.alias === "string" &&
+      typeof parsed?.origin === "string" &&
+      typeof parsed?.callback === "string" &&
+      typeof parsed?.csrf === "string"
+    ) {
+      return parsed as InstallTuple;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function randomToken(bytes: number): string {

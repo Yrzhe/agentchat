@@ -79,9 +79,14 @@ export const messages = sqliteTable("messages", {
   senderUserId: text("sender_user_id").references(() => users.id),
   body: text("body").notNull(),
   kind: text("kind", { enum: ["broadcast", "direct"] }).notNull(),
+  // NOTE: keep the second-rounded default for backwards-compat (changing it
+  // requires a destructive table-rebuild migration in SQLite). All app code
+  // paths now pass an explicit `Date.now()`-derived `created_at` from `nextTs()`
+  // in `core/chat/send.ts`, so this default is effectively unreachable.
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(sql`(unixepoch() * 1000)`),
 }, (t) => [
   index("messages_workspace_created_idx").on(t.workspaceId, t.createdAt),
+  index("messages_workspace_created_id_idx").on(t.workspaceId, t.createdAt, t.id),
 ]);
 
 export const mentions = sqliteTable("mentions", {

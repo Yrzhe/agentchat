@@ -15,6 +15,7 @@ export interface SendResult {
   messageId: string;
   kind: "broadcast" | "direct";
   mentioned: string[];
+  createdAt: number;
 }
 
 export class SendError extends Error {
@@ -30,28 +31,46 @@ export async function sendMessage(db: DB, input: SendInput): Promise<SendResult>
       "Use to:'*' (or omit to) for broadcast — '@all'/'@everyone' literals are not allowed."
     );
   }
-  const isDirect = input.to && input.to !== "*" && input.to.startsWith("@");
+
+  const toRaw = input.to;
+  if (toRaw && containsBroadcastKeyword(toRaw)) {
+    throw new SendError(
+      "BROADCAST_KEYWORD_FORBIDDEN",
+      "Use to:'*' for broadcast — '@all'/'@everyone' in the to field are not allowed."
+    );
+  }
+
+  const isDirect = !!toRaw && toRaw !== "*" && toRaw.startsWith("@");
   const kind: "broadcast" | "direct" = isDirect ? "direct" : "broadcast";
 
   const candidates = isDirect
-    ? [input.to!.slice(1), ...parseMentions(input.body)]
+    ? [toRaw!.slice(1), ...parseMentions(input.body)]
     : parseMentions(input.body);
 
   const resolved = await resolveMentions(db, input.workspaceId, candidates);
 
   const messageId = crypto.randomUUID();
-  await db.run(sql`
-    INSERT INTO messages (id, workspace_id, sender_agent_id, sender_user_id, body, kind)
-    VALUES (${messageId}, ${input.workspaceId}, ${input.senderAgentId}, ${input.senderUserId}, ${input.body}, ${kind})
-  `);
+  const createdAt = nextTs();
+
+  const statements = [
+    db.run(sql`
+      INSERT INTO messages (id, workspace_id, sender_agent_id, sender_user_id, body, kind, created_at)
+      VALUES (${messageId}, ${input.workspaceId}, ${input.senderAgentId}, ${input.senderUserId},
+              ${input.body}, ${kind}, ${createdAt})
+    `),
+  ];
 
   if (kind === "direct") {
     for (const agentId of resolved) {
-      await db.run(sql`INSERT INTO mentions (message_id, target_agent_id) VALUES (${messageId}, ${agentId})`);
+      statements.push(
+        db.run(sql`INSERT INTO mentions (message_id, target_agent_id) VALUES (${messageId}, ${agentId})`)
+      );
     }
   }
 
-  return { messageId, kind, mentioned: resolved };
+  await atomicWrite(db, statements);
+
+  return { messageId, kind, mentioned: resolved, createdAt };
 }
 
 async function resolveMentions(db: DB, workspaceId: string, handles: string[]): Promise<string[]> {
@@ -74,4 +93,35 @@ async function resolveMentions(db: DB, workspaceId: string, handles: string[]): 
     for (const r of byUser) out.push(r.id);
   }
   return Array.from(new Set(out));
+}
+
+/**
+ * Strictly-monotonic millisecond timestamp within a Worker isolate.
+ * Prevents same-ms collisions for rapid-fire messages (one source of the
+ * "lost mention after last_read_at" bug). Cross-isolate collisions are still
+ * possible but rare; the inbox should also tiebreak on id when adding indexes.
+ */
+let _lastTs = 0;
+function nextTs(): number {
+  const now = Date.now();
+  _lastTs = now > _lastTs ? now : _lastTs + 1;
+  return _lastTs;
+}
+
+/**
+ * Run a list of write statements atomically when the driver supports it (D1 batch),
+ * sequentially otherwise (better-sqlite3 in tests).
+ */
+async function atomicWrite(db: DB, statements: Promise<unknown>[]): Promise<void> {
+  if (statements.length === 0) return;
+  if (statements.length === 1) {
+    await statements[0];
+    return;
+  }
+  const maybeBatch = (db as unknown as { batch?: (stmts: unknown[]) => Promise<unknown> }).batch;
+  if (typeof maybeBatch === "function") {
+    await maybeBatch.call(db, statements);
+    return;
+  }
+  for (const stmt of statements) await stmt;
 }

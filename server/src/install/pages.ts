@@ -22,9 +22,6 @@ export function authorizePage(opts: {
 </div>
 <form method="POST" action="/api/keys/issue">
   <input type="hidden" name="csrf" value="${opts.csrf}">
-  <input type="hidden" name="workspace_id" value="${opts.workspaceId}">
-  <input type="hidden" name="alias" value="${opts.alias}">
-  <input type="hidden" name="origin" value="${opts.origin}">
   <p><button type="submit">Authorize</button></p>
 </form>
 <p class="meta">Powered by AgentChat — <a href="https://agentchat.app">agentchat.app</a></p>
