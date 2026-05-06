@@ -15,6 +15,13 @@
       "when": 1778048006770,
       "tag": "0001_silent_the_anarchist",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1778050865363,
+      "tag": "0002_ordinary_ben_grimm",
+      "breakpoints": true
     }
   ]
 }

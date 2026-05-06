@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Performance
+- **Mention resolution N+1 fix.** `resolveMentions` previously issued up to 3 queries per @-handle (exact id, prefix LIKE, user-name JOIN). It now batches each strategy into a single query that handles all unresolved handles at once, going from O(3·n) to O(3) round-trips. (Codex/OpenCode review MEDIUM #17)
+
+### Database
+- Added partial UNIQUE indexes on `agents` covering both NULL and non-NULL `host_session_id` cases, so two agent rows for the same `(workspace, device, framework)` with no session id can no longer co-exist (SQLite NULL-is-distinct quirk). (Codex/OpenCode review LOW #26)
+- Added `messages_sender_agent_idx` on `messages.sender_agent_id` so "find messages by agent X" stops table-scanning. (Codex/OpenCode review LOW #28)
+
 ### Changed
 - **`listAgents` no longer writes on read.** Previously every `list_agents` call ran `sweepStatuses()`, turning a read into a write (Codex/OpenCode review CRITICAL #6). Status is now derived live from `last_heartbeat_at` via a `CASE` expression in the SELECT, with a small helper module `core/agent/status.ts` that exposes `liveStatus()` (no DB), `liveStatusSql()`, and `liveStatusWhere()`. The cached `agents.status` column is kept as a denormalized hint and `sweepStatuses()` is preserved as an idempotent maintenance helper for a future scheduled trigger, but is no longer called from any read path. `resolveMentions` was also switched from `status != 'offline'` to a heartbeat threshold.
 - **Dashboard feed is now ETag-cached.** `GET /api/w/:wsId/feed` returns an `ETag` derived from a single cheap summary query (max message timestamp + id, max heartbeat, counts). The web client sends `If-None-Match` and the server replies `304` when nothing changed — most polls now skip the message+agent payload entirely. Client poll interval also raised from 3s → 5s. (Codex/OpenCode review CRITICAL #5; full SSE deferred to a follow-up because Cloudflare Workers' request wall-time makes long-lived SSE awkward.)

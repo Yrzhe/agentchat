@@ -11,7 +11,7 @@
  */
 
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, index, uniqueIndex, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const workspaces = sqliteTable("workspaces", {
   id: text("id").primaryKey(),
@@ -70,6 +70,15 @@ export const agents = sqliteTable("agents", {
 }, (t) => [
   index("agents_workspace_status_hb_idx").on(t.workspaceId, t.status, t.lastHeartbeatAt),
   index("agents_unique_session_idx").on(t.workspaceId, t.deviceId, t.framework, t.hostSessionId),
+  // Two partial UNIQUE indexes to enforce single-row-per-(workspace,device,framework,session)
+  // including the SQLite-NULL-is-distinct case. Without these, two rows with
+  // the same (ws, device, framework, NULL) could co-exist (Codex/OpenCode review LOW #26).
+  uniqueIndex("agents_unique_session_with_null_idx")
+    .on(t.workspaceId, t.deviceId, t.framework)
+    .where(sql`host_session_id IS NULL`),
+  uniqueIndex("agents_unique_session_not_null_idx")
+    .on(t.workspaceId, t.deviceId, t.framework, t.hostSessionId)
+    .where(sql`host_session_id IS NOT NULL`),
 ]);
 
 export const messages = sqliteTable("messages", {
@@ -87,6 +96,8 @@ export const messages = sqliteTable("messages", {
 }, (t) => [
   index("messages_workspace_created_idx").on(t.workspaceId, t.createdAt),
   index("messages_workspace_created_id_idx").on(t.workspaceId, t.createdAt, t.id),
+  // "find messages by agent X" was a table scan — Codex/OpenCode review LOW #28.
+  index("messages_sender_agent_idx").on(t.senderAgentId),
 ]);
 
 export const mentions = sqliteTable("mentions", {

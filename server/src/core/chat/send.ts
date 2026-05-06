@@ -74,28 +74,71 @@ export async function sendMessage(db: DB, input: SendInput): Promise<SendResult>
   return { messageId, kind, mentioned: resolved, createdAt };
 }
 
+/**
+ * Resolve a list of @-handles to canonical agent IDs in a workspace.
+ *
+ * Strategy (in order — first hit wins per handle):
+ *   1. Exact agent_id match.
+ *   2. Unique prefix match on agent_id.
+ *   3. User name match (online or idle agents only — offline excluded).
+ *
+ * Previously this looped per-handle, issuing up to 3 queries per handle
+ * (Codex/OpenCode review MEDIUM #17 — N+1). It now collects all unresolved
+ * handles between strategies and runs a single batched query each.
+ */
 async function resolveMentions(db: DB, workspaceId: string, handles: string[]): Promise<string[]> {
   if (handles.length === 0) return [];
   const dedup = Array.from(new Set(handles));
-  const out: string[] = [];
-  for (const h of dedup) {
-    const byId = (await db.all(
-      sql`SELECT id FROM agents WHERE workspace_id = ${workspaceId} AND id = ${h} LIMIT 1`
-    )) as { id: string }[];
-    if (byId.length) { out.push(byId[0].id); continue; }
-    const byPrefix = (await db.all(
-      sql`SELECT id FROM agents WHERE workspace_id = ${workspaceId} AND id LIKE ${h + "%"} LIMIT 2`
-    )) as { id: string }[];
-    if (byPrefix.length === 1) { out.push(byPrefix[0].id); continue; }
-    const offlineCutoff = Date.now() - OFFLINE_MS;
-    const byUser = (await db.all(
-      sql`SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id
-          WHERE a.workspace_id = ${workspaceId} AND u.name = ${h}
-            AND a.last_heartbeat_at >= ${offlineCutoff}`
-    )) as { id: string }[];
-    for (const r of byUser) out.push(r.id);
+  const resolved = new Set<string>();
+  const stillUnresolved = new Set(dedup);
+
+  // 1. Exact id match — single IN query.
+  if (stillUnresolved.size) {
+    const handlesArr = Array.from(stillUnresolved);
+    const exact = (await db.all(sql`
+      SELECT id FROM agents
+      WHERE workspace_id = ${workspaceId}
+        AND id IN (${sql.join(handlesArr.map((h) => sql`${h}`), sql`, `)})
+    `)) as { id: string }[];
+    for (const r of exact) {
+      resolved.add(r.id);
+      stillUnresolved.delete(r.id);
+    }
   }
-  return Array.from(new Set(out));
+
+  // 2. Prefix match — one OR-of-LIKE query for the remaining handles.
+  if (stillUnresolved.size) {
+    const handlesArr = Array.from(stillUnresolved);
+    const prefixed = (await db.all(sql`
+      SELECT id FROM agents
+      WHERE workspace_id = ${workspaceId}
+        AND (${sql.join(handlesArr.map((h) => sql`id LIKE ${h + "%"}`), sql` OR `)})
+    `)) as { id: string }[];
+    // Group prefix matches by which handle they could belong to. Only accept
+    // matches that are *unique* within the result for that prefix.
+    for (const h of handlesArr) {
+      const matches = prefixed.filter((r) => r.id.startsWith(h));
+      if (matches.length === 1) {
+        resolved.add(matches[0].id);
+        stillUnresolved.delete(h);
+      }
+    }
+  }
+
+  // 3. User-name match — single IN query, heartbeat threshold for liveness.
+  if (stillUnresolved.size) {
+    const handlesArr = Array.from(stillUnresolved);
+    const offlineCutoff = Date.now() - OFFLINE_MS;
+    const byUser = (await db.all(sql`
+      SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id
+      WHERE a.workspace_id = ${workspaceId}
+        AND u.name IN (${sql.join(handlesArr.map((h) => sql`${h}`), sql`, `)})
+        AND a.last_heartbeat_at >= ${offlineCutoff}
+    `)) as { id: string }[];
+    for (const r of byUser) resolved.add(r.id);
+  }
+
+  return Array.from(resolved);
 }
 
 /**

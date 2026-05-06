@@ -28,7 +28,10 @@ export async function seedWorkspace(db: DB, opts: { id: string; ownerUserId: str
   }
 }
 
-export async function seedAgent(db: DB, opts: { id: string; workspaceId: string; userId: string; framework?: string; deviceId?: string }) {
-  await db.run(sql`INSERT INTO agents (id, workspace_id, user_id, framework, device_id, status)
-    VALUES (${opts.id}, ${opts.workspaceId}, ${opts.userId}, ${opts.framework ?? "claude-code"}, ${opts.deviceId ?? "dev-1"}, ${"online"})`);
+export async function seedAgent(db: DB, opts: { id: string; workspaceId: string; userId: string; framework?: string; deviceId?: string; hostSessionId?: string }) {
+  // Default device_id to the agent id so multiple agents in the same test
+  // don't collide on the (ws, device, framework, NULL session_id) unique idx.
+  await db.run(sql`INSERT INTO agents (id, workspace_id, user_id, framework, device_id, host_session_id, status, last_heartbeat_at)
+    VALUES (${opts.id}, ${opts.workspaceId}, ${opts.userId}, ${opts.framework ?? "claude-code"},
+            ${opts.deviceId ?? `dev-${opts.id}`}, ${opts.hostSessionId ?? null}, ${"online"}, ${Date.now()})`);
 }

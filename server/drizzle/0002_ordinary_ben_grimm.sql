@@ -1,0 +1,3 @@
+CREATE UNIQUE INDEX `agents_unique_session_with_null_idx` ON `agents` (`workspace_id`,`device_id`,`framework`) WHERE host_session_id IS NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX `agents_unique_session_not_null_idx` ON `agents` (`workspace_id`,`device_id`,`framework`,`host_session_id`) WHERE host_session_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX `messages_sender_agent_idx` ON `messages` (`sender_agent_id`);
