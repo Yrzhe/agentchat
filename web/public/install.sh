@@ -189,7 +189,7 @@ write_local_marker() {
 {
   "version": 1,
   "workspace_id": "$WORKSPACE_ID",
-  "_marker": "Powered by AgentChat — https://agentchat.app"
+  "_marker": "Powered by AgentChat — https://github.com/yrzhe/agentchat"
 }
 EOF
 }

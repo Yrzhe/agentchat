@@ -72,3 +72,10 @@ server/.wrangler/
 
 # Claude Code local state
 .claude/
+
+# AgentChat installer side-effects (when this repo is itself instrumented).
+# In *consumer* repos the .agentchat.json marker is fine to commit, but
+# we don't want it polluting the AgentChat source repo.
+.agentchat.json
+AGENTS.md
+*.agentchat.bak.*

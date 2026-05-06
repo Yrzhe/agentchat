@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { client } from "@/lib/edgespark";
 import { useAuth } from "@/hooks/useAuth";
+import { Workspace } from "@/pages/Workspace";
 
 interface Workspace {
   id: string;
@@ -64,7 +65,7 @@ function fmtAgo(epoch: number | null): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-function WorkspaceList({ workspaces, origin }: { workspaces: Workspace[]; origin: string }) {
+function WorkspaceList({ workspaces }: { workspaces: Workspace[] }) {
   if (workspaces.length === 0) {
     return (
       <div className="border border-dashed border-neutral-800 rounded-lg p-6 text-neutral-400 text-sm">
@@ -77,7 +78,7 @@ function WorkspaceList({ workspaces, origin }: { workspaces: Workspace[]; origin
       {workspaces.map((w) => (
         <a
           key={w.id}
-          href={`${origin}/api/w/${w.id}/status`}
+          href={`/w/${w.id}`}
           className="block px-4 py-3 hover:bg-neutral-900 transition-colors"
         >
           <div className="flex items-center justify-between">
@@ -155,7 +156,7 @@ function Dashboard({ user, signOut }: { user: { email: string; name?: string | n
         {workspaces === null ? (
           <div className="text-neutral-500 text-sm">Loading…</div>
         ) : (
-          <WorkspaceList workspaces={workspaces} origin={origin} />
+          <WorkspaceList workspaces={workspaces} />
         )}
 
         <h2 className="text-2xl font-semibold mb-2 mt-12">Install in a project</h2>
@@ -196,10 +197,22 @@ function Dashboard({ user, signOut }: { user: { email: string; name?: string | n
 
 function App() {
   const { user, loading, isAuthenticated, signOut } = useAuth();
+  const [path, setPath] = useState(window.location.pathname);
+
+  useEffect(() => {
+    const onPop = () => setPath(window.location.pathname);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
   if (loading) {
     return <main className="min-h-screen bg-neutral-950 text-neutral-500 flex items-center justify-center">Loading…</main>;
   }
   if (!isAuthenticated || !user) return <SignIn />;
+
+  const wsMatch = path.match(/^\/w\/([a-z0-9]+)\/?$/i);
+  if (wsMatch) return <Workspace workspaceId={wsMatch[1]} />;
+
   return <Dashboard user={user} signOut={signOut} />;
 }
 

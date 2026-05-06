@@ -27,6 +27,44 @@ export function mountStatusRoute(
     return c.json({ user: { id: me.id, email: me.email, name: me.name }, workspaces: rows });
   });
 
+  // JSON feed for the workspace chat view (SPA polls this).
+  app.get("/api/w/:workspaceId/feed", async (c) => {
+    const { db, auth } = ctxFn();
+    const me = await auth.currentUser(c.req.raw);
+    if (!me) return c.json({ error: "unauthorized" }, 401);
+    const wsId = c.req.param("workspaceId");
+
+    const member = (await db.all(
+      sql`SELECT 1 FROM workspace_members WHERE workspace_id = ${wsId} AND user_id = ${me.id} LIMIT 1`
+    )) as unknown[];
+    if (!member.length) return c.json({ error: "not a workspace member" }, 403);
+
+    const ws = (await db.all(
+      sql`SELECT id, name, origin FROM workspaces WHERE id = ${wsId}`
+    )) as { id: string; name: string; origin: string | null }[];
+
+    const agents = (await db.all(
+      sql`SELECT id, framework, device_name, host_session_id, status, last_heartbeat_at
+          FROM agents WHERE workspace_id = ${wsId} ORDER BY last_heartbeat_at DESC`
+    )) as Array<{ id: string; framework: string; device_name: string | null; host_session_id: string | null; status: string; last_heartbeat_at: number }>;
+
+    const messages = (await db.all(
+      sql`SELECT m.id, m.body, m.kind, m.sender_agent_id, m.sender_user_id, m.created_at,
+                 u.name AS sender_user_name, u.email AS sender_user_email
+          FROM messages m
+          LEFT JOIN users u ON u.id = m.sender_user_id
+          WHERE m.workspace_id = ${wsId}
+          ORDER BY m.created_at DESC LIMIT 100`
+    )) as Array<{ id: string; body: string; kind: string; sender_agent_id: string | null; sender_user_id: string | null; created_at: number; sender_user_name: string | null; sender_user_email: string | null }>;
+
+    return c.json({
+      workspace: ws[0] ?? null,
+      agents,
+      messages,
+      currentUserId: me.id,
+    });
+  });
+
   // POST a human-authored message into a workspace.
   app.post("/api/w/:workspaceId/messages", async (c) => {
     const { db, auth } = ctxFn();
@@ -39,25 +77,39 @@ export function mountStatusRoute(
     )) as unknown[];
     if (!member.length) return c.text("not a workspace member", 403);
 
-    const form = await c.req.parseBody();
-    const body = String(form["body"] ?? "").trim();
-    const to = String(form["to"] ?? "").trim();
-    if (!body) return c.text("body required", 400);
+    const contentType = c.req.header("content-type") ?? "";
+    const wantsJson = c.req.header("accept")?.includes("application/json");
+    let body = "";
+    let to = "";
+    if (contentType.includes("application/json")) {
+      const j = (await c.req.json()) as { body?: string; to?: string };
+      body = String(j.body ?? "").trim();
+      to = String(j.to ?? "").trim();
+    } else {
+      const form = await c.req.parseBody();
+      body = String(form["body"] ?? "").trim();
+      to = String(form["to"] ?? "").trim();
+    }
+    if (!body) {
+      return wantsJson ? c.json({ error: "body required" }, 400) : c.text("body required", 400);
+    }
 
     try {
-      await sendMessage(db, {
+      const r = await sendMessage(db, {
         workspaceId: wsId,
         senderAgentId: null,
         senderUserId: me.id,
         body,
         to: to || undefined,
       });
+      if (wantsJson) return c.json(r);
+      return c.redirect(`/api/w/${wsId}/status`);
     } catch (e) {
-      if (e instanceof SendError) return c.text(e.message, 400);
+      if (e instanceof SendError) {
+        return wantsJson ? c.json({ error: e.code, message: e.message }, 400) : c.text(e.message, 400);
+      }
       throw e;
     }
-
-    return c.redirect(`/api/w/${wsId}/status`);
   });
 
   // Read-only status page (also serves as the human "chat" view with a send form).
@@ -114,7 +166,6 @@ export function mountStatusRoute(
 
     return c.html(html`<!doctype html>
 <html><head><meta charset="utf-8"><title>${ws[0]?.name ?? wsId} — AgentChat</title>
-<meta http-equiv="refresh" content="5">
 <style>
   body{font:14px/1.5 system-ui;max-width:880px;margin:24px auto;padding:0 16px;color:#222}
   h2{margin:0 0 4px} .meta{color:#777;font-size:12px}
