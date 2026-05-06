@@ -4,7 +4,8 @@ import { parseMentions, containsBroadcastKeyword } from "./parse";
 
 export interface SendInput {
   workspaceId: string;
-  senderAgentId: string;
+  /** null when the message is sent by a human user from the dashboard (not an agent). */
+  senderAgentId: string | null;
   senderUserId: string;
   body: string;
   to?: string;

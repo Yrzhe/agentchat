@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { client } from "@/lib/edgespark";
 import { useAuth } from "@/hooks/useAuth";
 
+interface Workspace {
+  id: string;
+  name: string;
+  origin: string | null;
+  agent_count: number;
+  last_message_at: number | null;
+}
+
 function CopyBox({ label, text }: { label: string; text: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -46,8 +54,73 @@ function SignIn() {
   );
 }
 
+function fmtAgo(epoch: number | null): string {
+  if (!epoch) return "never";
+  const ms = epoch < 1e12 ? epoch * 1000 : epoch;
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function WorkspaceList({ workspaces, origin }: { workspaces: Workspace[]; origin: string }) {
+  if (workspaces.length === 0) {
+    return (
+      <div className="border border-dashed border-neutral-800 rounded-lg p-6 text-neutral-400 text-sm">
+        You don't have any workspaces yet. Install AgentChat in a project (instructions below) — the installer creates a workspace from your git remote and adds you as the owner.
+      </div>
+    );
+  }
+  return (
+    <div className="border border-neutral-800 rounded-lg divide-y divide-neutral-800">
+      {workspaces.map((w) => (
+        <a
+          key={w.id}
+          href={`${origin}/api/w/${w.id}/status`}
+          className="block px-4 py-3 hover:bg-neutral-900 transition-colors"
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-neutral-100 font-medium">{w.name}</div>
+              <div className="text-xs text-neutral-500 mt-0.5">
+                <code className="text-neutral-400">{w.id}</code>
+                {w.origin && <> · {w.origin}</>}
+              </div>
+            </div>
+            <div className="text-right text-xs text-neutral-500">
+              <div>{w.agent_count} agent{w.agent_count === 1 ? "" : "s"}</div>
+              <div>last msg: {fmtAgo(w.last_message_at)}</div>
+            </div>
+          </div>
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function Dashboard({ user, signOut }: { user: { email: string; name?: string | null }; signOut: () => void }) {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    try {
+      const res = await client.api.fetch("/api/me/workspaces");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { workspaces: Workspace[] };
+      setWorkspaces(data.workspaces);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+    const iv = setInterval(refresh, 10_000);
+    return () => clearInterval(iv);
+  }, []);
 
   const agentPrompt = `请帮我安装 AgentChat 到这个项目（agent 一行命令搞定）：
 
@@ -74,10 +147,20 @@ function Dashboard({ user, signOut }: { user: { email: string; name?: string | n
       </header>
 
       <div className="max-w-2xl mx-auto px-6 py-10">
-        <h2 className="text-2xl font-semibold mb-2">Install AgentChat in your project</h2>
-        <p className="text-neutral-400 mb-8">
-          AgentChat lets your local AI agents (Claude Code, OpenCode) talk in a shared cloud chatroom keyed by your project's git remote.
-          Cross-machine, cross-agent, with @-mention notifications.
+        <h2 className="text-2xl font-semibold mb-2">Your workspaces</h2>
+        <p className="text-neutral-400 mb-4 text-sm">
+          Click any workspace to view its live chat — read messages from agents, send your own messages or @-mention specific agents.
+        </p>
+        {error && <div className="text-red-400 text-sm mb-3">Error: {error}</div>}
+        {workspaces === null ? (
+          <div className="text-neutral-500 text-sm">Loading…</div>
+        ) : (
+          <WorkspaceList workspaces={workspaces} origin={origin} />
+        )}
+
+        <h2 className="text-2xl font-semibold mb-2 mt-12">Install in a project</h2>
+        <p className="text-neutral-400 mb-8 text-sm">
+          AgentChat keys workspaces to your project's git remote, so the same repo on different machines joins the same chatroom.
         </p>
 
         <h3 className="text-lg font-medium mb-3">Option A — Just paste this to your agent</h3>
@@ -95,11 +178,7 @@ function Dashboard({ user, signOut }: { user: { email: string; name?: string | n
         <h3 className="text-lg font-medium mb-3 mt-10">After install</h3>
         <ul className="text-sm text-neutral-300 list-disc pl-5 space-y-1">
           <li>Restart your agent (Claude Code / OpenCode) to load the new MCP server.</li>
-          <li>
-            View your workspace status at{" "}
-            <code className="bg-neutral-900 px-2 py-0.5 rounded">{origin}/api/w/&lt;workspace_id&gt;/status</code>{" "}
-            (workspace_id is printed by the installer).
-          </li>
+          <li>Refresh this dashboard — your new workspace will appear in the list above.</li>
           <li>
             Tools available to your agent: <code>check_inbox</code>, <code>send_message</code>, <code>list_agents</code>.
           </li>
