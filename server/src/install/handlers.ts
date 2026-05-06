@@ -15,6 +15,14 @@ interface InstallTuple {
   origin: string;
   callback: string;
   csrf: string;
+  /**
+   * Optional client-supplied state. Echoed verbatim back via the callback
+   * redirect so the original CLI invocation can verify the response really
+   * corresponds to its own auth request (defense in depth on top of the
+   * cookie binding). MCP install.sh ≥ batch-5 sends this; older clients
+   * just don't see a state param echoed.
+   */
+  state?: string;
 }
 
 export function mountInstallRoutes(
@@ -34,9 +42,13 @@ export function mountInstallRoutes(
     const framework = c.req.query("framework") ?? "unknown";
     const deviceName = c.req.query("device_name") ?? "unknown";
     const callback = c.req.query("callback") ?? "";
+    const state = c.req.query("state") ?? undefined;
 
     if (!isValidLoopbackCallback(callback)) {
       return c.text("Bad request: callback must be http://127.0.0.1:<port>", 400);
+    }
+    if (state !== undefined && (state.length < 8 || state.length > 128 || !/^[A-Za-z0-9_-]+$/.test(state))) {
+      return c.text("Bad request: state must be 8-128 chars of [A-Za-z0-9_-]", 400);
     }
 
     let workspaceId: string;
@@ -54,6 +66,7 @@ export function mountInstallRoutes(
       origin,
       callback,
       csrf,
+      state,
     };
     const tupleEncoded = encodeURIComponent(JSON.stringify(tuple));
 
@@ -116,6 +129,7 @@ export function mountInstallRoutes(
     dest.searchParams.set("token", token);
     dest.searchParams.set("workspace_id", workspaceId);
     dest.searchParams.set("mcp_url", audience);
+    if (tuple.state) dest.searchParams.set("state", tuple.state);
 
     c.res.headers.append("set-cookie", `${INSTALL_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
     c.res.headers.append("set-cookie", `${CSRF_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);

@@ -114,6 +114,42 @@ describe("CRITICAL #1 — install tuple binding", () => {
     expect(r1.status).toBe(400);
   });
 
+  it("echoes the client-supplied state in the callback redirect (Batch 5 #22)", async () => {
+    const state = "abc12345-state-XYZ";
+    const url =
+      `http://test.local/api/install?origin=https://github.com/a/b` +
+      `&alias=b&cwd=/tmp/b&framework=claude-code&device_name=mac` +
+      `&callback=${encodeURIComponent("http://127.0.0.1:51000/done")}` +
+      `&state=${encodeURIComponent(state)}`;
+    const r1 = await app.fetch(new Request(url));
+    const cookies = extractCookies(r1.headers.getSetCookie());
+    const tuple = JSON.parse(decodeURIComponent(cookies.agentchat_install));
+    expect(tuple.state).toBe(state);
+
+    const cookieHeader = `agentchat_install=${cookies.agentchat_install}; agentchat_csrf=${cookies.agentchat_csrf}`;
+    const r2 = await app.fetch(
+      new Request("http://test.local/api/keys/issue", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie: cookieHeader },
+        body: `csrf=${cookies.agentchat_csrf}`,
+        redirect: "manual",
+      })
+    );
+    expect(r2.status).toBe(302);
+    const loc = new URL(r2.headers.get("location")!);
+    expect(loc.searchParams.get("state")).toBe(state);
+  });
+
+  it("rejects malformed state param", async () => {
+    const url =
+      `http://test.local/api/install?origin=https://github.com/a/b&alias=b&cwd=/tmp/b` +
+      `&framework=claude-code&device_name=mac` +
+      `&callback=${encodeURIComponent("http://127.0.0.1:51000/done")}` +
+      `&state=abc`; // too short
+    const r = await app.fetch(new Request(url));
+    expect(r.status).toBe(400);
+  });
+
   it("rejects POST when the cookie's userId no longer matches the logged-in session", async () => {
     const r1 = await getInstallPage("https://github.com/a/b");
     const cookies = extractCookies(r1.headers.getSetCookie());

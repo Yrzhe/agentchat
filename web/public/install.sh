@@ -38,11 +38,21 @@ atomic_write() {
   mv "$tmp" "$target"
 }
 
+# Keep only the most recent N backups for a given file. Old backups indefinitely
+# preserve OLD bearer tokens — Codex review MED #15.
+prune_backups() {
+  local f="$1" keep="${2:-3}"
+  local pattern="${f}.agentchat.bak.*"
+  # shellcheck disable=SC2086
+  ls -1t $pattern 2>/dev/null | tail -n +"$((keep + 1))" | xargs -I {} rm -f -- {} 2>/dev/null || true
+}
+
 backup_file() {
   local f="$1"
   [ -f "$f" ] || return 0
   local bak="${f}.agentchat.bak.$(ts)"
   cp -p "$f" "$bak"
+  prune_backups "$f" 3
   echo "$bak"
 }
 
@@ -129,46 +139,88 @@ ensure_device() {
 }
 
 # ------------ phase: register ------------
+# Single-process flow: bind the loopback listener FIRST (no port-prediction
+# race — Codex review LOW #23), then announce the auth URL, open the browser,
+# then accept exactly one callback. Token never crosses the shell, so it
+# doesn't appear in argv anywhere.
 register() {
   ORIGIN="$(git -C "$PWD" remote get-url origin 2>/dev/null || true)"
   CWD="$PWD"
   ALIAS="$(basename "$CWD")"
 
-  # Open a local listener for OAuth callback
-  PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
-  CALLBACK="http://127.0.0.1:${PORT}/done"
+  log "Opening loopback listener and browser..."
+  REGFILE="$(mktemp -t agentchat-reg.XXXXXX)"
+  trap 'rm -f "$REGFILE"' EXIT
+  python3 - "$SERVER" "$ORIGIN" "$CWD" "$ALIAS" "$HOST" "$DEVICE_NAME" "$REGFILE" <<'PY'
+import http.server, socketserver, sys, urllib.parse, webbrowser, json, threading, secrets
 
-  # URL-encode params
-  Q="$(python3 - <<PY "$ORIGIN" "$CWD" "$ALIAS" "$HOST" "$DEVICE_NAME" "$CALLBACK"
-import sys, urllib.parse
-print(urllib.parse.urlencode(dict(zip(["origin","cwd","alias","framework","device_name","callback"], sys.argv[1:]))))
-PY
-)"
-  AUTH_URL="$SERVER/api/install?$Q"
+server, origin, cwd, alias, framework, device_name, regfile = sys.argv[1:8]
+state = secrets.token_urlsafe(24)
 
-  log "Opening browser to authorize: $AUTH_URL"
-  if command -v open >/dev/null 2>&1; then open "$AUTH_URL"; elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$AUTH_URL"; fi
-  echo "If the browser didn't open, visit the URL above."
+captured = {}
 
-  # Listen ONE callback then exit
-  log "Waiting for callback on :$PORT ..."
-  RESPONSE="$(python3 - "$PORT" <<'PY'
-import http.server,socketserver,sys,urllib.parse
 class H(http.server.BaseHTTPRequestHandler):
-  def log_message(self,*a,**k): pass
-  def do_GET(self):
-    q=urllib.parse.urlparse(self.path).query
-    sys.stdout.write(q); sys.stdout.flush()
-    self.send_response(200); self.send_header("content-type","text/html"); self.end_headers()
-    self.wfile.write(b"<h2>You can close this tab.</h2>")
-    raise SystemExit
-with socketserver.TCPServer(("127.0.0.1",int(sys.argv[1])),H) as srv: srv.handle_request()
+    def log_message(self, *a, **k):
+        pass
+
+    def do_GET(self):
+        q = urllib.parse.urlparse(self.path).query
+        captured.update(urllib.parse.parse_qs(q))
+        self.send_response(200)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(
+            b"<!doctype html><meta charset=utf-8>"
+            b"<h2>AgentChat: token received.</h2>"
+            b"<p>You can close this tab and return to your terminal.</p>"
+        )
+
+# Bind to an ephemeral port first; we own this port for the lifetime of
+# the script — no TOCTOU window between predicting and binding.
+srv = socketserver.TCPServer(("127.0.0.1", 0), H)
+port = srv.server_address[1]
+callback = f"http://127.0.0.1:{port}/done"
+qs = urllib.parse.urlencode({
+    "origin": origin, "cwd": cwd, "alias": alias,
+    "framework": framework, "device_name": device_name,
+    "callback": callback, "state": state,
+})
+auth_url = f"{server}/api/install?{qs}"
+sys.stderr.write(f"[agentchat] Authorize: {auth_url}\n")
+sys.stderr.write(f"[agentchat] Listening on 127.0.0.1:{port}\n")
+
+# Open the browser in a daemon thread so it doesn't block the listener.
+threading.Thread(target=webbrowser.open, args=(auth_url,), daemon=True).start()
+
+# Serve exactly one request, then return.
+srv.handle_request()
+
+token = (captured.get("token") or [""])[0]
+workspace_id = (captured.get("workspace_id") or [""])[0]
+mcp_url = (captured.get("mcp_url") or [""])[0]
+returned_state = (captured.get("state") or [""])[0]
+if not (token and workspace_id and mcp_url):
+    sys.stderr.write("[agentchat] Server didn't return token/workspace_id/mcp_url. Aborting.\n")
+    sys.exit(2)
+# Defense-in-depth: verify the callback corresponds to OUR auth request.
+# Server >= batch-5 echoes back our state. Older servers won't, in which
+# case we tolerate the absence rather than break old deployments — the
+# server-side cookie binding still gates token issuance to the user's
+# session.
+if returned_state and returned_state != state:
+    sys.stderr.write("[agentchat] State mismatch — callback does not correspond to this install request. Aborting.\n")
+    sys.exit(2)
+
+# Write to the regfile (chmod 600 by mktemp on macOS/Linux). This is the only
+# medium that touches the bearer token at this layer; nothing goes through argv.
+with open(regfile, "w") as f:
+    json.dump({"token": token, "workspace_id": workspace_id, "mcp_url": mcp_url}, f)
 PY
-)"
-  TOKEN="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.parse_qs(sys.argv[1]).get("token",[""])[0])' "$RESPONSE")"
-  WORKSPACE_ID="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.parse_qs(sys.argv[1]).get("workspace_id",[""])[0])' "$RESPONSE")"
-  MCP_URL="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.parse_qs(sys.argv[1]).get("mcp_url",[""])[0])' "$RESPONSE")"
-  [ -n "$TOKEN" ] && [ -n "$WORKSPACE_ID" ] && [ -n "$MCP_URL" ] || die "Server didn't return a token. Aborting."
+  chmod 600 "$REGFILE"
+  TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$REGFILE")"
+  WORKSPACE_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace_id"])' "$REGFILE")"
+  MCP_URL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mcp_url"])' "$REGFILE")"
+  [ -n "$TOKEN" ] && [ -n "$WORKSPACE_ID" ] && [ -n "$MCP_URL" ] || die "No token returned."
   log "Got workspace $WORKSPACE_ID, mcp_url $MCP_URL"
 }
 
@@ -194,46 +246,113 @@ write_local_marker() {
 EOF
 }
 
+# Read a JSON file leniently — strip // line comments and trailing commas
+# before parsing. Falls back to an empty dict if the file is missing or
+# fundamentally non-JSON. If the file IS valid JSON but the root is not a
+# dict, return the magic sentinel "__non_dict__" — callers must refuse to
+# write rather than corrupting the user's existing array/string config.
+# Codex review MED #16.
+read_json_lenient_py() {
+  cat <<'PY'
+def read_lenient(path):
+    import os, json, re
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return {}
+    raw = open(path, encoding="utf-8").read()
+    # Strip // line comments (vscode-style JSONC). Heuristic: only when the
+    # // is at line start, after whitespace, or after a JSON delimiter — so
+    # we don't accidentally cut a "//foo" inside a string value. Trade-off:
+    # may still mangle strings that contain "} //" but those are rare in
+    # MCP host configs (urls use http://... which are *inside* string
+    # quotes after a `"key":` so they have a non-whitespace char before //).
+    stripped = re.sub(r"(^|[\s,\[\{])//[^\n]*", r"\1", raw, flags=re.M)
+    # Strip trailing commas: ,] or ,}
+    stripped = re.sub(r",(\s*[}\]])", r"\1", stripped)
+    try:
+        d = json.loads(stripped)
+    except Exception:
+        # Try the raw content too — some files have // inside strings.
+        try:
+            d = json.loads(raw)
+        except Exception:
+            return None  # unparseable
+    return d
+PY
+}
+
+# Token is passed via env var AGENTCHAT_TOKEN to keep it out of argv.
+# os.environ inspection is same-user only on standard kernels, narrower
+# than `ps aux` which exposes argv globally on many Linux configs.
+# Codex review MED #15.
 write_host_config_claude() {
   HOST_BAK="$(backup_file "$HOST_CONFIG")"
-  python3 - "$HOST_CONFIG" "$MCP_URL" "$TOKEN" "$DEVICE_ID" "$HOST" "$WORKSPACE_ID" <<'PY'
-import json,sys,os,pathlib
-p=sys.argv[1]; mcp=sys.argv[2]; tok=sys.argv[3]; dev=sys.argv[4]; hf=sys.argv[5]; ws=sys.argv[6]
-d=json.load(open(p)) if os.path.exists(p) and os.path.getsize(p)>0 else {}
-d.setdefault("mcpServers",{})
-d["mcpServers"]["agentchat"]={
-  "type":"http","url":mcp,
-  "headers":{"Authorization":f"Bearer {tok}","X-AgentChat-Device-Id":dev,"X-AgentChat-Framework":hf,"X-AgentChat-Device-Name":__import__('socket').gethostname()},
+  AGENTCHAT_TOKEN="$TOKEN" python3 - "$HOST_CONFIG" "$MCP_URL" "$DEVICE_ID" "$HOST" "$WORKSPACE_ID" <<PY
+$(read_json_lenient_py)
+import json, os, sys, socket
+p, mcp, dev, hf, ws = sys.argv[1:6]
+tok = os.environ["AGENTCHAT_TOKEN"]
+d = read_lenient(p)
+if d is None:
+    sys.stderr.write(f"[agentchat] {p} is not parseable JSON/JSONC. Refusing to overwrite — please move it aside and re-run.\n")
+    sys.exit(3)
+if not isinstance(d, dict):
+    sys.stderr.write(f"[agentchat] {p} root is {type(d).__name__}, not an object. Refusing to write mcpServers into it.\n")
+    sys.exit(3)
+d.setdefault("mcpServers", {})
+if not isinstance(d["mcpServers"], dict):
+    sys.stderr.write(f"[agentchat] {p} has mcpServers but it's {type(d['mcpServers']).__name__}, not an object.\n")
+    sys.exit(3)
+d["mcpServers"]["agentchat"] = {
+    "type": "http", "url": mcp,
+    "headers": {
+        "Authorization": f"Bearer {tok}",
+        "X-AgentChat-Device-Id": dev,
+        "X-AgentChat-Framework": hf,
+        "X-AgentChat-Device-Name": socket.gethostname(),
+    },
 }
-tmp=p+".tmp"; json.dump(d,open(tmp,"w"),indent=2); os.replace(tmp,p)
+tmp = p + ".tmp"
+json.dump(d, open(tmp, "w"), indent=2)
+os.replace(tmp, p)
 PY
 
   HOOKS_BAK="$(backup_file "$HOOKS_FILE")"
   mkdir -p "$(dirname "$HOOKS_FILE")"
-  python3 - "$HOOKS_FILE" <<'PY'
-import json,os,sys
-p=sys.argv[1]
-d=json.load(open(p)) if os.path.exists(p) and os.path.getsize(p)>0 else {}
-d.setdefault("hooks",{}).setdefault("SessionStart",[])
-ss=d["hooks"]["SessionStart"]
-# 1) Drop any prior bogus entry (early-MVP install.sh wrote {"type":"mcp_tool",...}
-#    which Claude Code's hooks schema rejects — silent no-op).
+  python3 - "$HOOKS_FILE" <<PY
+$(read_json_lenient_py)
+import json, os, sys
+p = sys.argv[1]
+d = read_lenient(p)
+if d is None:
+    sys.stderr.write(f"[agentchat] {p} is not parseable JSON/JSONC. Skipping hook install.\n")
+    sys.exit(0)
+if not isinstance(d, dict):
+    sys.stderr.write(f"[agentchat] {p} root is not an object. Skipping hook install.\n")
+    sys.exit(0)
+d.setdefault("hooks", {}).setdefault("SessionStart", [])
+if not isinstance(d["hooks"], dict) or not isinstance(d["hooks"].get("SessionStart"), list):
+    sys.stderr.write(f"[agentchat] {p} has unexpected hooks shape. Skipping.\n")
+    sys.exit(0)
+ss = d["hooks"]["SessionStart"]
+# Drop any prior bogus entry from earlier installs that wrote
+# {"type":"mcp_tool",...} which Claude Code's hooks schema rejects.
 ss[:] = [
-  h for h in ss
-  if not (isinstance(h, dict) and h.get("type") == "mcp_tool" and h.get("tool") == "agentchat__check_inbox")
+    h for h in ss
+    if not (isinstance(h, dict) and h.get("type") == "mcp_tool" and h.get("tool") == "agentchat__check_inbox")
 ]
-# 2) Idempotently add the working command-style hook.
 WANT = "$HOME/.agentchat/check-inbox.sh"
 already = any(
-  isinstance(e, dict) and isinstance(e.get("hooks"), list) and any(
-    isinstance(h, dict) and h.get("command") == WANT
-    for h in e["hooks"]
-  )
-  for e in ss
+    isinstance(e, dict) and isinstance(e.get("hooks"), list) and any(
+        isinstance(h, dict) and h.get("command") == WANT
+        for h in e["hooks"]
+    )
+    for e in ss
 )
 if not already:
-  ss.append({"hooks":[{"type":"command","command":WANT}]})
-tmp=p+".tmp"; json.dump(d,open(tmp,"w"),indent=2); os.replace(tmp,p)
+    ss.append({"hooks": [{"type": "command", "command": WANT}]})
+tmp = p + ".tmp"
+json.dump(d, open(tmp, "w"), indent=2)
+os.replace(tmp, p)
 PY
 }
 
@@ -338,16 +457,34 @@ EOS
 write_host_config_opencode() {
   HOST_BAK="$(backup_file "$HOST_CONFIG")"
   mkdir -p "$(dirname "$HOST_CONFIG")"
-  python3 - "$HOST_CONFIG" "$MCP_URL" "$TOKEN" "$DEVICE_ID" "$HOST" <<'PY'
-import json,os,sys,socket
-p=sys.argv[1]; mcp=sys.argv[2]; tok=sys.argv[3]; dev=sys.argv[4]; hf=sys.argv[5]
-d=json.load(open(p)) if os.path.exists(p) and os.path.getsize(p)>0 else {}
-d.setdefault("mcp",{})
-d["mcp"]["agentchat"]={
-  "type":"remote","url":mcp,
-  "headers":{"Authorization":f"Bearer {tok}","X-AgentChat-Device-Id":dev,"X-AgentChat-Framework":hf,"X-AgentChat-Device-Name":socket.gethostname()},
+  AGENTCHAT_TOKEN="$TOKEN" python3 - "$HOST_CONFIG" "$MCP_URL" "$DEVICE_ID" "$HOST" <<PY
+$(read_json_lenient_py)
+import json, os, sys, socket
+p, mcp, dev, hf = sys.argv[1:5]
+tok = os.environ["AGENTCHAT_TOKEN"]
+d = read_lenient(p)
+if d is None:
+    sys.stderr.write(f"[agentchat] {p} is not parseable JSON/JSONC. Refusing to overwrite.\n")
+    sys.exit(3)
+if not isinstance(d, dict):
+    sys.stderr.write(f"[agentchat] {p} root is not an object. Refusing to write.\n")
+    sys.exit(3)
+d.setdefault("mcp", {})
+if not isinstance(d["mcp"], dict):
+    sys.stderr.write(f"[agentchat] {p} has mcp but it's not an object.\n")
+    sys.exit(3)
+d["mcp"]["agentchat"] = {
+    "type": "remote", "url": mcp,
+    "headers": {
+        "Authorization": f"Bearer {tok}",
+        "X-AgentChat-Device-Id": dev,
+        "X-AgentChat-Framework": hf,
+        "X-AgentChat-Device-Name": socket.gethostname(),
+    },
 }
-tmp=p+".tmp"; json.dump(d,open(tmp,"w"),indent=2); os.replace(tmp,p)
+tmp = p + ".tmp"
+json.dump(d, open(tmp, "w"), indent=2)
+os.replace(tmp, p)
 PY
 }
 
