@@ -79,3 +79,14 @@ server/.wrangler/
 .agentchat.json
 AGENTS.md
 *.agentchat.bak.*
+
+# Personal workspace-layout scaffolding lives in the OUTER container,
+# not inside this OSS repo. Belt-and-suspenders in case it leaks back in.
+/marketing/
+/experiments/
+/data/
+/scripts/
+/docs/superpowers/
+/docs/implementation/
+/.superset/
+/metadata.json
