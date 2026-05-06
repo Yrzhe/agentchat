@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { DB } from "../platform";
 import { liveStatusSql, liveStatusWhere, type LiveStatus } from "./status";
+import { now } from "../clock";
 
 export interface AgentListItem {
   agent_id: string;
@@ -22,14 +23,14 @@ export async function listAgents(
   workspaceId: string,
   filter: { status?: LiveStatus; framework?: string; deviceId?: string }
 ): Promise<AgentListItem[]> {
-  const now = Date.now();
+  const t = now();
   const rows = (await db.all(sql`
     SELECT id AS agent_id, framework, device_id, device_name, host_session_id,
-           ${liveStatusSql(now)} AS status,
+           ${liveStatusSql(t)} AS status,
            last_heartbeat_at AS last_seen, cwd
     FROM agents
     WHERE workspace_id = ${workspaceId}
-      ${filter.status ? sql`AND ${liveStatusWhere(filter.status, now)}` : sql``}
+      ${filter.status ? sql`AND ${liveStatusWhere(filter.status, t)}` : sql``}
       ${filter.framework ? sql`AND framework = ${filter.framework}` : sql``}
       ${filter.deviceId ? sql`AND device_id = ${filter.deviceId}` : sql``}
     ORDER BY last_heartbeat_at DESC

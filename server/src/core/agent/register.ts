@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { DB } from "../platform";
 import { IDLE_MS, OFFLINE_MS } from "./status";
+import { now } from "../clock";
 
 export interface UpsertAgentInput {
   workspaceId: string;
@@ -23,10 +24,10 @@ export async function upsertAgent(db: DB, input: UpsertAgentInput): Promise<stri
     LIMIT 1
   `)) as { id: string }[];
 
-  const now = Date.now();
+  const t = now();
 
   if (existing.length) {
-    await db.run(sql`UPDATE agents SET last_heartbeat_at = ${now}, status = 'online' WHERE id = ${existing[0].id}`);
+    await db.run(sql`UPDATE agents SET last_heartbeat_at = ${t}, status = 'online' WHERE id = ${existing[0].id}`);
     return existing[0].id;
   }
 
@@ -36,13 +37,13 @@ export async function upsertAgent(db: DB, input: UpsertAgentInput): Promise<stri
                         host_session_id, cwd, status, last_heartbeat_at)
     VALUES (${id}, ${input.workspaceId}, ${input.userId}, ${input.framework},
             ${input.frameworkVersion ?? null}, ${input.deviceId}, ${input.deviceName ?? null},
-            ${input.hostSessionId ?? null}, ${input.cwd ?? null}, 'online', ${now})
+            ${input.hostSessionId ?? null}, ${input.cwd ?? null}, 'online', ${t})
   `);
   return id;
 }
 
 export async function refreshHeartbeat(db: DB, agentId: string): Promise<void> {
-  await db.run(sql`UPDATE agents SET last_heartbeat_at = ${Date.now()}, status = 'online' WHERE id = ${agentId}`);
+  await db.run(sql`UPDATE agents SET last_heartbeat_at = ${now()}, status = 'online' WHERE id = ${agentId}`);
 }
 
 /**
@@ -56,7 +57,7 @@ export async function refreshHeartbeat(db: DB, agentId: string): Promise<void> {
  * (Codex/OpenCode review CRITICAL #6).
  */
 export async function sweepStatuses(db: DB): Promise<void> {
-  const now = Date.now();
-  await db.run(sql`UPDATE agents SET status = 'idle' WHERE status = 'online' AND last_heartbeat_at < ${now - IDLE_MS}`);
-  await db.run(sql`UPDATE agents SET status = 'offline' WHERE status != 'offline' AND last_heartbeat_at < ${now - OFFLINE_MS}`);
+  const t = now();
+  await db.run(sql`UPDATE agents SET status = 'idle' WHERE status = 'online' AND last_heartbeat_at < ${t - IDLE_MS}`);
+  await db.run(sql`UPDATE agents SET status = 'offline' WHERE status != 'offline' AND last_heartbeat_at < ${t - OFFLINE_MS}`);
 }

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Architecture
+- **Core no longer typed against `drizzle-orm/d1`.** `core/platform.ts` now declares `DB = BaseSQLiteDatabase<"async", unknown>` from `drizzle-orm/sqlite-core`. Both D1 (production) and better-sqlite3 (tests) extend this base, so the core layer is no longer married to D1 at the type level. A future Postgres or non-D1 SQLite adapter can supply its own driver without redefining the type. (Codex/OpenCode review HIGH #8)
+- **`AuthAdapter` split into `MachineAuth` + `BrowserAuth`.** Machine bearer verification (`verifyKey`) and human session resolution (`currentUser`) are now separate interfaces. The composed `AuthAdapter extends MachineAuth, BrowserAuth` keeps the existing call sites working, but a headless adapter that only serves the MCP path can implement just `MachineAuth` and skip the browser half entirely. (Codex review MED #10)
+- **Swappable clock for the core layer.** Added `core/clock.ts` with `now()` / `setClock()` / `resetClock()`. All direct `Date.now()` calls in `core/*` (`send.ts`, `agent/register.ts`, `agent/list.ts`, `agent/status.ts`) now route through it. Tests can pin time deterministically; the production default still calls `Date.now()`. (Codex review MED #11)
+
 ### Install flow hardening
 - **Bearer token no longer crosses argv.** The post-callback Python helpers that mutate `~/.claude.json` and the OpenCode config now read the token from the `AGENTCHAT_TOKEN` env var instead of receiving it as a positional argument. argv is exposed via `ps aux` to all users on many Linux configs; env is `/proc/PID/environ`, same-user-only. (Codex review MED #15)
 - **Old credential backups are pruned.** `backup_file` now keeps only the 3 most recent `*.agentchat.bak.*` files per target. Indefinite backups previously preserved superseded bearer tokens forever. (Codex review MED #15)

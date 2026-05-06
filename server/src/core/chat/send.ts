@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import type { DB } from "../platform";
 import { parseMentions, containsBroadcastKeyword } from "./parse";
 import { OFFLINE_MS } from "../agent/status";
+import { now } from "../clock";
 
 export interface SendInput {
   workspaceId: string;
@@ -128,7 +129,7 @@ async function resolveMentions(db: DB, workspaceId: string, handles: string[]): 
   // 3. User-name match — single IN query, heartbeat threshold for liveness.
   if (stillUnresolved.size) {
     const handlesArr = Array.from(stillUnresolved);
-    const offlineCutoff = Date.now() - OFFLINE_MS;
+    const offlineCutoff = now() - OFFLINE_MS;
     const byUser = (await db.all(sql`
       SELECT a.id FROM agents a JOIN users u ON a.user_id = u.id
       WHERE a.workspace_id = ${workspaceId}
@@ -149,8 +150,8 @@ async function resolveMentions(db: DB, workspaceId: string, handles: string[]): 
  */
 let _lastTs = 0;
 function nextTs(): number {
-  const now = Date.now();
-  _lastTs = now > _lastTs ? now : _lastTs + 1;
+  const t = now();
+  _lastTs = t > _lastTs ? t : _lastTs + 1;
   return _lastTs;
 }
 
