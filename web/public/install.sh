@@ -215,10 +215,124 @@ import json,os,sys
 p=sys.argv[1]
 d=json.load(open(p)) if os.path.exists(p) and os.path.getsize(p)>0 else {}
 d.setdefault("hooks",{}).setdefault("SessionStart",[])
-existing=[h for h in d["hooks"]["SessionStart"] if h.get("type")=="mcp_tool" and h.get("tool")=="agentchat__check_inbox"]
-if not existing: d["hooks"]["SessionStart"].append({"type":"mcp_tool","tool":"agentchat__check_inbox"})
+ss=d["hooks"]["SessionStart"]
+# 1) Drop any prior bogus entry (early-MVP install.sh wrote {"type":"mcp_tool",...}
+#    which Claude Code's hooks schema rejects — silent no-op).
+ss[:] = [
+  h for h in ss
+  if not (isinstance(h, dict) and h.get("type") == "mcp_tool" and h.get("tool") == "agentchat__check_inbox")
+]
+# 2) Idempotently add the working command-style hook.
+WANT = "$HOME/.agentchat/check-inbox.sh"
+already = any(
+  isinstance(e, dict) and isinstance(e.get("hooks"), list) and any(
+    isinstance(h, dict) and h.get("command") == WANT
+    for h in e["hooks"]
+  )
+  for e in ss
+)
+if not already:
+  ss.append({"hooks":[{"type":"command","command":WANT}]})
 tmp=p+".tmp"; json.dump(d,open(tmp,"w"),indent=2); os.replace(tmp,p)
 PY
+}
+
+write_check_inbox_script() {
+  cat > "$AC_DIR/check-inbox.sh" <<'EOS'
+#!/usr/bin/env bash
+# AgentChat SessionStart hook (Claude Code).
+# Fetches unread @-mentions and recent broadcasts so the agent starts the
+# session aware of context. Silent if nothing to report. Hard 5s timeout;
+# never blocks session start on network failure.
+set -u
+LC_ALL=C
+
+CRED="$HOME/.agentchat/credentials.json"
+DEVICE="$HOME/.agentchat/device.json"
+[ -f "$CRED" ] || exit 0
+[ -f "$DEVICE" ] || exit 0
+command -v curl >/dev/null 2>&1 || exit 0
+command -v python3 >/dev/null 2>&1 || exit 0
+
+read_json() {
+  python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],''))" "$1" "$2" 2>/dev/null
+}
+
+TOKEN="$(read_json "$CRED" user_workspace_token)"
+MCP_URL="$(read_json "$CRED" mcp_url)"
+DEVICE_ID="$(read_json "$DEVICE" id)"
+DEVICE_NAME="$(hostname)"
+[ -n "$TOKEN" ] && [ -n "$MCP_URL" ] && [ -n "$DEVICE_ID" ] || exit 0
+
+INIT_HEADERS="$(mktemp -t agentchat-init.XXXXXX)"
+trap 'rm -f "$INIT_HEADERS"' EXIT
+
+curl -s --max-time 5 -o /dev/null -D "$INIT_HEADERS" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2025-06-18" \
+  -H "X-AgentChat-Device-Id: $DEVICE_ID" \
+  -H "X-AgentChat-Device-Name: $DEVICE_NAME" \
+  -H "X-AgentChat-Framework: claude-code" \
+  -X POST "$MCP_URL" \
+  --data-raw '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"agentchat-session-start","version":"0.1.0"}}}' \
+  || exit 0
+
+SESSION_ID="$(awk -F': *' 'tolower($1)=="mcp-session-id" {gsub(/\r/,"",$2); print $2; exit}' "$INIT_HEADERS")"
+
+CALL_RESP="$(curl -s --max-time 5 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2025-06-18" \
+  ${SESSION_ID:+-H "Mcp-Session-Id: $SESSION_ID"} \
+  -H "X-AgentChat-Device-Id: $DEVICE_ID" \
+  -H "X-AgentChat-Device-Name: $DEVICE_NAME" \
+  -H "X-AgentChat-Framework: claude-code" \
+  -X POST "$MCP_URL" \
+  --data-raw '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"check_inbox","arguments":{}}}')" || exit 0
+
+python3 - "$CALL_RESP" 2>/dev/null << 'PY' || exit 0
+import json, sys
+raw = sys.argv[1]
+if "data: " in raw:
+    chunks = [line[len("data: "):] for line in raw.splitlines() if line.startswith("data: ")]
+    payload = "\n".join(chunks)
+else:
+    payload = raw
+try:
+    msg = json.loads(payload)
+except Exception:
+    sys.exit(0)
+result = msg.get("result", {}) or {}
+sc = result.get("structuredContent", {}) or {}
+unread = sc.get("unread_mentions") or []
+recent = sc.get("recent_broadcasts") or []
+if not unread and not recent:
+    sys.exit(0)
+print("=== AgentChat session pre-flight ===")
+if unread:
+    print(f"You have {len(unread)} unread @-mention(s) (auto-marked-read after this fetch):")
+    for m in unread:
+        sender = m.get("sender_agent_id") or m.get("sender_user_id") or "?"
+        body = (m.get("body") or "").strip().replace("\n", " ")
+        if len(body) > 240:
+            body = body[:240] + "…"
+        print(f"  - from {str(sender)[:8]}: {body}")
+if recent:
+    shown = recent[:3]
+    print(f"Recent broadcasts in workspace ({len(recent)}, showing {len(shown)}):")
+    for m in shown:
+        sender = m.get("sender_agent_id") or m.get("sender_user_id") or "?"
+        body = (m.get("body") or "").strip().replace("\n", " ")
+        if len(body) > 200:
+            body = body[:200] + "…"
+        print(f"  - {str(sender)[:8]}: {body}")
+print("=== end AgentChat ===")
+PY
+EOS
+  chmod +x "$AC_DIR/check-inbox.sh"
 }
 
 write_host_config_opencode() {
@@ -305,6 +419,7 @@ main() {
 
   register
   write_credentials
+  write_check_inbox_script
   write_local_marker
   if [ "$HOST" = "claude-code" ]; then write_host_config_claude; else write_host_config_opencode; fi
   write_agents_md
