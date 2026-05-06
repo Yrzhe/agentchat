@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Operations
+- Added `server/scripts/prune-messages.ts` — admin-triggered pruner that deletes messages older than `daysToKeep` and their mention rows in the right order (mentions first, then messages, to respect the FK). Stop-gap for proper TTL until EdgeSpark exposes a Cloudflare Cron Trigger; see Codex/OpenCode review MED #19. Validated by `tests/scripts/prune-messages.test.ts`.
+
+### Documented (deferred)
+- **`last_read_at` semantic.** Codex/OpenCode review MED #20 flagged that `check_inbox` advances `last_read_at` whenever mentions are returned, so an agent that fetches but doesn't act still marks them "read". This is the deliberate v1 contract — there is no separate ack step on the MCP side, and the inbox tool is meant to be the agent's authoritative read. Changing this requires a separate `ack_messages` tool or a `peek` flag on `check_inbox`; both belong to a v2 API revision. Captured here so the call is intentional, not accidental.
+- **Per-request `McpServer` construction.** Codex review LOW #24 noted that `McpServer` + tool registration runs every request. The cost is synchronous module-cached zod schema setup; threading an AsyncLocalStorage-backed singleton through the SDK's tool handlers (which don't accept extra args) costs more complexity than the per-request overhead. Accepted as-is.
+- **Triple-plaintext token storage.** Token lives in `~/.agentchat/credentials.json`, the host MCP config (`~/.claude.json` or OpenCode's), and pre-pruned `.agentchat.bak.*` (Batch 5 capped at 3). All same-user, all chmod 600. Rotating to a system keychain is a future enhancement; the current threat model is "any user-level process on this machine can already read every file the user can read".
+
+### Polish
+- **Dashboard install prompt now language-aware.** Auto-detects `navigator.language`; renders Chinese for `zh*` browsers and English otherwise. The original prompt was hardcoded zh, which surprised non-Chinese viewers. (Codex/OpenCode review LOW #27)
+
 ### Architecture
 - **Core no longer typed against `drizzle-orm/d1`.** `core/platform.ts` now declares `DB = BaseSQLiteDatabase<"async", unknown>` from `drizzle-orm/sqlite-core`. Both D1 (production) and better-sqlite3 (tests) extend this base, so the core layer is no longer married to D1 at the type level. A future Postgres or non-D1 SQLite adapter can supply its own driver without redefining the type. (Codex/OpenCode review HIGH #8)
 - **`AuthAdapter` split into `MachineAuth` + `BrowserAuth`.** Machine bearer verification (`verifyKey`) and human session resolution (`currentUser`) are now separate interfaces. The composed `AuthAdapter extends MachineAuth, BrowserAuth` keeps the existing call sites working, but a headless adapter that only serves the MCP path can implement just `MachineAuth` and skip the browser half entirely. (Codex review MED #10)

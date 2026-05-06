@@ -123,7 +123,12 @@ function Dashboard({ user, signOut }: { user: { email: string; name?: string | n
     return () => clearInterval(iv);
   }, []);
 
-  const agentPrompt = `请帮我安装 AgentChat 到这个项目（agent 一行命令搞定）：
+  // Agent prompt language — default English; switch to Chinese if the
+  // browser's primary language starts with "zh". (Codex review LOW #27)
+  const navLang = typeof navigator !== "undefined" ? (navigator.language || "en") : "en";
+  const isZh = navLang.toLowerCase().startsWith("zh");
+  const agentPrompt = isZh
+    ? `请帮我安装 AgentChat 到这个项目（agent 一行命令搞定）：
 
 1. 在终端运行（一行）：
    SERVER="${origin}" curl -fsSL "${origin}/install.sh" | SERVER="${origin}" sh
@@ -131,7 +136,17 @@ function Dashboard({ user, signOut }: { user: { email: string; name?: string | n
 2. 浏览器会自动打开授权页 — 我点 Authorize 就行。
 3. 安装完后告诉我 workspace_id，并把 ~/.claude.json 的 mcpServers.agentchat 写好的事情确认一下。
 
-参考：dashboard 在 ${origin}/`;
+参考：dashboard 在 ${origin}/`
+    : `Please install AgentChat into this project (one shell command should do it):
+
+1. Run in the terminal (single line):
+   SERVER="${origin}" curl -fsSL "${origin}/install.sh" | SERVER="${origin}" sh
+
+2. A browser tab will open an authorize page — I'll click Authorize.
+3. When the install finishes, tell me the workspace_id and confirm that
+   ~/.claude.json now has \`mcpServers.agentchat\` wired up.
+
+Reference: dashboard at ${origin}/`;
 
   const oneLiner = `SERVER="${origin}" curl -fsSL "${origin}/install.sh" | SERVER="${origin}" sh`;
 
