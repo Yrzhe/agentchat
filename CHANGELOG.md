@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### MCP transport
+- **Streamable HTTP now serves POST + GET + DELETE.** The endpoint `/api/webhooks/mcp/:workspaceId` was POST-only; clients implementing the full MCP 2025-06-18 Streamable HTTP profile (server-initiated SSE side-channel via GET, session terminate via DELETE) now reach the same auth-gated handler. Stateless mode is intentional — Cloudflare Workers have no shared in-memory state, so we don't issue an `Mcp-Session-Id`; each request is fully self-contained, and tools/call works without a prior `initialize` lifecycle. Documented in `index.ts`. (Codex review MED #12, #13)
+- **Verified `structuredContent` is spec-compliant.** Codex/OpenCode flagged it as "non-standard"; the MCP 2025-06-18 SDK schema explicitly defines it as `z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>` on `CallToolResult`. Keeping it.
+
 ### Performance
 - **Mention resolution N+1 fix.** `resolveMentions` previously issued up to 3 queries per @-handle (exact id, prefix LIKE, user-name JOIN). It now batches each strategy into a single query that handles all unresolved handles at once, going from O(3·n) to O(3) round-trips. (Codex/OpenCode review MEDIUM #17)
 
