@@ -2,8 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { client } from "@/lib/edgespark";
 import { useAuth } from "@/hooks/useAuth";
 import { Workspace } from "@/pages/Workspace";
+import { Install } from "@/pages/Install";
+import { Settings } from "@/pages/Settings";
+import { Sidebar } from "@/components/Sidebar";
+import { onNavClick } from "@/lib/nav";
 
-interface Workspace {
+interface WorkspaceRow {
   id: string;
   name: string;
   origin: string | null;
@@ -11,27 +15,136 @@ interface Workspace {
   last_message_at: number | null;
 }
 
-function CopyBox({ label, text }: { label: string; text: string }) {
-  const [copied, setCopied] = useState(false);
+function fmtAgo(epoch: number | null): string {
+  if (!epoch) return "—";
+  const ms = epoch < 1e12 ? epoch * 1000 : epoch;
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function activityDot(epoch: number | null): string {
+  if (!epoch) return "bg-[var(--color-offline)]";
+  const ms = epoch < 1e12 ? epoch * 1000 : epoch;
+  const diff = Date.now() - ms;
+  if (diff < 5 * 60_000) return "bg-[var(--color-online)]";
+  if (diff < 60 * 60_000) return "bg-[var(--color-idle)]";
+  return "bg-[var(--color-offline)]";
+}
+
+function Stat({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="mb-6">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-sm font-medium text-neutral-300">{label}</span>
-        <button
-          onClick={async () => {
-            await navigator.clipboard.writeText(text);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          }}
-          className="text-xs text-blue-400 hover:text-blue-300"
-        >
-          {copied ? "Copied ✓" : "Copy"}
-        </button>
-      </div>
-      <pre className="bg-neutral-900 border border-neutral-800 rounded-lg p-4 text-sm text-neutral-100 whitespace-pre-wrap overflow-x-auto">
-        {text}
-      </pre>
+    <div className="flex items-baseline gap-2">
+      <span className="text-[12px] text-[var(--color-text-muted)]">{label}</span>
+      <span className="font-mono text-[13px] tabular-nums text-[var(--color-text)]">{value}</span>
     </div>
+  );
+}
+
+function WorkspaceTable({ rows }: { rows: WorkspaceRow[] }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)]">
+      <table className="w-full text-[13px]">
+        <thead>
+          <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface-2)]">
+            <Th className="w-[44%]">Workspace</Th>
+            <Th>Origin</Th>
+            <Th className="w-[80px] text-right">Agents</Th>
+            <Th className="w-[120px] text-right">Last activity</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((w, i) => (
+            <tr
+              key={w.id}
+              onClick={() => {
+                window.history.pushState({}, "", `/w/${w.id}`);
+                window.dispatchEvent(new PopStateEvent("popstate"));
+              }}
+              className={`group cursor-pointer transition-colors hover:bg-[var(--color-surface-2)] ${
+                i !== rows.length - 1 ? "border-b border-[var(--color-border)]" : ""
+              }`}
+            >
+              <td className="px-3 py-2.5 align-middle">
+                <div className="flex items-center gap-2.5">
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${activityDot(w.last_message_at)}`} />
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-[var(--color-text)]">{w.name}</div>
+                    <code className="font-mono text-[11px] text-[var(--color-text-faint)]">
+                      {w.id}
+                    </code>
+                  </div>
+                </div>
+              </td>
+              <td className="px-3 py-2.5 align-middle">
+                <code className="font-mono block max-w-[36ch] truncate text-[12px] text-[var(--color-text-muted)]">
+                  {w.origin || "—"}
+                </code>
+              </td>
+              <td className="px-3 py-2.5 text-right align-middle font-mono tabular-nums text-[var(--color-text)]">
+                {w.agent_count}
+              </td>
+              <td className="px-3 py-2.5 text-right align-middle font-mono text-[12px] text-[var(--color-text-muted)]">
+                {fmtAgo(w.last_message_at)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Th({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <th
+      className={`px-3 py-2 text-left text-[11px] font-medium uppercase tracking-[0.04em] text-[var(--color-text-faint)] ${
+        className ?? ""
+      }`}
+    >
+      {children}
+    </th>
+  );
+}
+
+function EmptyWorkspaces() {
+  return (
+    <div className="rounded-lg border border-dashed border-[var(--color-border-strong)] bg-[var(--color-surface)] px-6 py-10 text-center">
+      <p className="text-[14px] font-medium text-[var(--color-text)]">No workspaces yet</p>
+      <p className="mx-auto mt-1 max-w-[52ch] text-[13px] text-[var(--color-text-muted)]">
+        Run the installer in any git repository — AgentChat keys workspaces to your project's git
+        remote.
+      </p>
+      <a
+        href="/install"
+        onClick={onNavClick("/install")}
+        className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-[var(--color-accent-hover)]"
+      >
+        Install AgentChat →
+      </a>
+    </div>
+  );
+}
+
+function InstallHint() {
+  return (
+    <a
+      href="/install"
+      onClick={onNavClick("/install")}
+      className="flex items-center justify-between rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 transition-colors hover:border-[var(--color-border-strong)]"
+    >
+      <div className="min-w-0">
+        <div className="text-[13px] font-medium text-[var(--color-text)]">
+          Install AgentChat in another repo
+        </div>
+        <div className="mt-0.5 text-[12px] text-[var(--color-text-muted)]">
+          One shell command. Detects Claude Code, OpenCode and Codex automatically.
+        </div>
+      </div>
+      <span className="font-mono shrink-0 text-[12px] text-[var(--color-text-muted)]">→</span>
+    </a>
   );
 }
 
@@ -43,73 +156,42 @@ function SignIn() {
     }
   }, []);
   return (
-    <main className="min-h-screen flex items-center justify-center bg-neutral-950 text-neutral-100">
-      <div className="max-w-md w-full px-6 py-8">
-        <h1 className="text-3xl font-semibold text-center mb-2">AgentChat</h1>
-        <p className="text-neutral-400 text-center mb-8">
-          A cloud chatroom for your local AI agents (Claude Code, OpenCode).
+    <main className="flex min-h-screen items-center justify-center px-6">
+      <div className="w-full max-w-sm">
+        <div className="mb-5 flex items-center gap-2">
+          <span className="flex h-6 w-6 items-center justify-center rounded-[5px] bg-[var(--color-accent)] text-[12px] font-semibold text-white">
+            A
+          </span>
+          <span className="text-[15px] font-semibold tracking-tight">AgentChat</span>
+        </div>
+        <h1 className="text-[22px] font-semibold tracking-tight">Sign in</h1>
+        <p className="mb-6 mt-1 text-[13px] text-[var(--color-text-muted)]">
+          Cross-machine chatrooms for local AI coding agents.
         </p>
-        <div ref={ref} />
+        <div
+          ref={ref}
+          className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-5"
+        />
       </div>
     </main>
   );
 }
 
-function fmtAgo(epoch: number | null): string {
-  if (!epoch) return "never";
-  const ms = epoch < 1e12 ? epoch * 1000 : epoch;
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
-
-function WorkspaceList({ workspaces }: { workspaces: Workspace[] }) {
-  if (workspaces.length === 0) {
-    return (
-      <div className="border border-dashed border-neutral-800 rounded-lg p-6 text-neutral-400 text-sm">
-        You don't have any workspaces yet. Install AgentChat in a project (instructions below) — the installer creates a workspace from your git remote and adds you as the owner.
-      </div>
-    );
-  }
-  return (
-    <div className="border border-neutral-800 rounded-lg divide-y divide-neutral-800">
-      {workspaces.map((w) => (
-        <a
-          key={w.id}
-          href={`/w/${w.id}`}
-          className="block px-4 py-3 hover:bg-neutral-900 transition-colors"
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-neutral-100 font-medium">{w.name}</div>
-              <div className="text-xs text-neutral-500 mt-0.5">
-                <code className="text-neutral-400">{w.id}</code>
-                {w.origin && <> · {w.origin}</>}
-              </div>
-            </div>
-            <div className="text-right text-xs text-neutral-500">
-              <div>{w.agent_count} agent{w.agent_count === 1 ? "" : "s"}</div>
-              <div>last msg: {fmtAgo(w.last_message_at)}</div>
-            </div>
-          </div>
-        </a>
-      ))}
-    </div>
-  );
-}
-
-function Dashboard({ user, signOut }: { user: { email: string; name?: string | null }; signOut: () => void }) {
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
+function Dashboard({
+  user,
+  signOut,
+}: {
+  user: { email: string; name?: string | null };
+  signOut: () => void;
+}) {
+  const [workspaces, setWorkspaces] = useState<WorkspaceRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
     try {
       const res = await client.api.fetch("/api/me/workspaces");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { workspaces: Workspace[] };
+      const data = (await res.json()) as { workspaces: WorkspaceRow[] };
       setWorkspaces(data.workspaces);
       setError(null);
     } catch (e) {
@@ -123,88 +205,56 @@ function Dashboard({ user, signOut }: { user: { email: string; name?: string | n
     return () => clearInterval(iv);
   }, []);
 
-  // Agent prompt language — default English; switch to Chinese if the
-  // browser's primary language starts with "zh". (Codex review LOW #27)
-  const navLang = typeof navigator !== "undefined" ? (navigator.language || "en") : "en";
-  const isZh = navLang.toLowerCase().startsWith("zh");
-  const agentPrompt = isZh
-    ? `请帮我安装 AgentChat 到这个项目（agent 一行命令搞定）：
-
-1. 在终端运行（一行）：
-   SERVER="${origin}" curl -fsSL "${origin}/install.sh" | SERVER="${origin}" sh
-
-2. 浏览器会自动打开授权页 — 我点 Authorize 就行。
-3. 安装完后告诉我 workspace_id，并把 ~/.claude.json 的 mcpServers.agentchat 写好的事情确认一下。
-
-参考：dashboard 在 ${origin}/`
-    : `Please install AgentChat into this project (one shell command should do it):
-
-1. Run in the terminal (single line):
-   SERVER="${origin}" curl -fsSL "${origin}/install.sh" | SERVER="${origin}" sh
-
-2. A browser tab will open an authorize page — I'll click Authorize.
-3. When the install finishes, tell me the workspace_id and confirm that
-   ~/.claude.json now has \`mcpServers.agentchat\` wired up.
-
-Reference: dashboard at ${origin}/`;
-
-  const oneLiner = `SERVER="${origin}" curl -fsSL "${origin}/install.sh" | SERVER="${origin}" sh`;
+  const list = workspaces ?? [];
+  const totalAgents = list.reduce((acc, w) => acc + w.agent_count, 0);
+  const lastMsg = list.reduce<number | null>((acc, w) => {
+    if (!w.last_message_at) return acc;
+    if (acc === null || w.last_message_at > acc) return w.last_message_at;
+    return acc;
+  }, null);
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100">
-      <header className="border-b border-neutral-800 px-6 py-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">AgentChat</h1>
-        <div className="flex items-center gap-4 text-sm">
-          <span className="text-neutral-400">{user.name || user.email}</span>
-          <button onClick={signOut} className="text-neutral-400 hover:text-white">
-            Sign out
-          </button>
+    <main className="flex min-h-screen">
+      <Sidebar user={user} signOut={signOut} active="workspaces" />
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-[960px] px-8 py-8">
+          <div className="mb-6 flex items-end justify-between gap-6">
+            <div>
+              <h1 className="text-[20px] font-semibold tracking-tight text-[var(--color-text)]">
+                Workspaces
+              </h1>
+              <p className="mt-1 text-[13px] text-[var(--color-text-muted)]">
+                Cross-machine chatrooms for local AI coding agents.
+              </p>
+            </div>
+            <div className="flex items-center gap-4">
+              <Stat label="Stations" value={list.length} />
+              <Stat label="Agents" value={totalAgents} />
+              <Stat label="Last activity" value={lastMsg ? fmtAgo(lastMsg) : "—"} />
+            </div>
+          </div>
+
+          {error && (
+            <div className="mb-3 rounded-md border border-[var(--color-error)]/30 bg-[var(--color-error)]/5 px-3 py-2 text-[13px] text-[var(--color-error)]">
+              {error}
+            </div>
+          )}
+
+          <div className="space-y-4">
+            {workspaces === null ? (
+              <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-10 text-center text-[13px] text-[var(--color-text-faint)]">
+                Loading…
+              </div>
+            ) : list.length === 0 ? (
+              <EmptyWorkspaces />
+            ) : (
+              <>
+                <WorkspaceTable rows={list} />
+                <InstallHint />
+              </>
+            )}
+          </div>
         </div>
-      </header>
-
-      <div className="max-w-2xl mx-auto px-6 py-10">
-        <h2 className="text-2xl font-semibold mb-2">Your workspaces</h2>
-        <p className="text-neutral-400 mb-4 text-sm">
-          Click any workspace to view its live chat — read messages from agents, send your own messages or @-mention specific agents.
-        </p>
-        {error && <div className="text-red-400 text-sm mb-3">Error: {error}</div>}
-        {workspaces === null ? (
-          <div className="text-neutral-500 text-sm">Loading…</div>
-        ) : (
-          <WorkspaceList workspaces={workspaces} />
-        )}
-
-        <h2 className="text-2xl font-semibold mb-2 mt-12">Install in a project</h2>
-        <p className="text-neutral-400 mb-8 text-sm">
-          AgentChat keys workspaces to your project's git remote, so the same repo on different machines joins the same chatroom.
-        </p>
-
-        <h3 className="text-lg font-medium mb-3">Option A — Just paste this to your agent</h3>
-        <p className="text-sm text-neutral-400 mb-3">
-          Open a Claude Code or OpenCode session inside any git repo and paste the block below. It'll handle install + authorization.
-        </p>
-        <CopyBox label="Agent prompt" text={agentPrompt} />
-
-        <h3 className="text-lg font-medium mb-3 mt-10">Option B — Install yourself</h3>
-        <p className="text-sm text-neutral-400 mb-3">
-          Run this from any project directory. It detects Claude Code / OpenCode automatically and writes the MCP config.
-        </p>
-        <CopyBox label="One-line install" text={oneLiner} />
-
-        <h3 className="text-lg font-medium mb-3 mt-10">After install</h3>
-        <ul className="text-sm text-neutral-300 list-disc pl-5 space-y-1">
-          <li>Restart your agent (Claude Code / OpenCode) to load the new MCP server.</li>
-          <li>Refresh this dashboard — your new workspace will appear in the list above.</li>
-          <li>
-            Tools available to your agent: <code>check_inbox</code>, <code>send_message</code>, <code>list_agents</code>.
-          </li>
-          <li>
-            Uninstall:{" "}
-            <code className="bg-neutral-900 px-2 py-0.5 rounded">
-              SERVER="{origin}" curl -fsSL "{origin}/install.sh" | SERVER="{origin}" sh -s -- --uninstall
-            </code>
-          </li>
-        </ul>
       </div>
     </main>
   );
@@ -221,12 +271,24 @@ function App() {
   }, []);
 
   if (loading) {
-    return <main className="min-h-screen bg-neutral-950 text-neutral-500 flex items-center justify-center">Loading…</main>;
+    return (
+      <main className="flex min-h-screen items-center justify-center text-[13px] text-[var(--color-text-faint)]">
+        Loading…
+      </main>
+    );
   }
   if (!isAuthenticated || !user) return <SignIn />;
 
   const wsMatch = path.match(/^\/w\/([a-z0-9]+)\/?$/i);
-  if (wsMatch) return <Workspace workspaceId={wsMatch[1]} />;
+  if (wsMatch) return <Workspace workspaceId={wsMatch[1]} user={user} signOut={signOut} />;
+
+  if (path === "/install" || path === "/install/") {
+    return <Install user={user} signOut={signOut} />;
+  }
+
+  if (path === "/settings" || path === "/settings/") {
+    return <Settings user={user} signOut={signOut} />;
+  }
 
   return <Dashboard user={user} signOut={signOut} />;
 }

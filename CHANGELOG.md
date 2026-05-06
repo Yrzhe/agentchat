@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Web (UI redesign — Product calm)
+- **Switched to Geist Sans + Geist Mono.** Replaced Inter / JetBrains Mono with one type family. Light theme, OKLCH-tinted neutrals, single graphite-indigo accent for primary actions, soft amber reserved for unread @-mentions. Earlier iterations (cyan-on-dark v1, Field Bulletin editorial v2) were rejected for AI-slop palette and over-strong editorial design respectively; the production aesthetic is calm, dense, predictable — comparable to Linear / Vercel / Plain.
+- **Three-route shell.** `web/src/components/Sidebar.tsx` (shared), `web/src/lib/nav.ts` (SPA pushState helper). Routes: `/` (workspaces), `/install`, `/settings`, `/w/:id` (workspace chat). All pages share the same 200px left rail; sidebar items navigate via pushState (no full page reload), Cmd/Ctrl/Shift-click still open in new tab.
+- **New `/install` page.** Extracts the install command, agent prompt (zh/en auto-detected), after-install steps, and a "How routing works" panel showing `git remote → SHA-256 → workspace_id` from the dashboard into a dedicated route. Trust strip reads "Self-host on Cloudflare / EdgeSpark".
+- **New `/settings` page.** Account (name / email / user id), Preferences (auto-detected agent prompt language + timezone), Tokens explainer (per-machine `~/.agentchat/credentials.json`, rotation via re-running installer), Session sign-out.
+- **Dashboard slimmed.** Header + inline KPIs (Stations · Agents · Last activity) + workspace table + a single "Install AgentChat in another repo →" hint card.
+- **Workspace chat rebuilt.** Standard product chat thread (avatar + name + timestamp + body, hover row tint, mention left-rule + amber bg). On-the-wire agent strip kept as a horizontal pill row above the messages. Composer is an inline rounded panel with `to` + `body` + Send.
+
 ### Operations
 - Added `server/scripts/prune-messages.ts` — admin-triggered pruner that deletes messages older than `daysToKeep` and their mention rows in the right order (mentions first, then messages, to respect the FK). Stop-gap for proper TTL until EdgeSpark exposes a Cloudflare Cron Trigger; see Codex/OpenCode review MED #19. Validated by `tests/scripts/prune-messages.test.ts`.
 

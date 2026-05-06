@@ -1,1 +1,101 @@
 @import "tailwindcss";
+
+/*
+ * Product calm — light, dense, predictable
+ *
+ * One typeface family (Geist), near-monochrome ink, tinted neutrals,
+ * one quiet accent reserved for primary actions and a soft amber
+ * for unread @-mentions. No editorial flourish, no theming language.
+ */
+@theme {
+  /* Surfaces — barely tinted toward warm */
+  --color-bg: oklch(0.992 0.003 80);
+  --color-surface: oklch(1 0 0);
+  --color-surface-2: oklch(0.974 0.004 80);
+  --color-surface-3: oklch(0.952 0.006 80);
+
+  /* Borders — soft hairlines */
+  --color-border: oklch(0.910 0.006 260);
+  --color-border-strong: oklch(0.840 0.008 260);
+
+  /* Text — graphite ink */
+  --color-text: oklch(0.220 0.018 260);
+  --color-text-soft: oklch(0.430 0.014 260);
+  --color-text-muted: oklch(0.580 0.010 260);
+  --color-text-faint: oklch(0.700 0.008 260);
+
+  /* Single quiet accent for primary actions / focus / links */
+  --color-accent: oklch(0.380 0.060 265);          /* graphite-indigo */
+  --color-accent-hover: oklch(0.300 0.060 265);
+  --color-accent-soft: oklch(0.380 0.060 265 / 0.08);
+
+  /* Functional colors — subdued */
+  --color-online: oklch(0.620 0.060 150);
+  --color-idle: oklch(0.700 0.060 75);
+  --color-offline: oklch(0.700 0.008 260);
+  --color-mention: oklch(0.620 0.110 75);          /* soft amber */
+  --color-mention-bg: oklch(0.620 0.110 75 / 0.08);
+  --color-error: oklch(0.560 0.140 30);
+
+  --color-selection: oklch(0.380 0.060 265 / 0.18);
+
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, "Liberation Mono", "Courier New", monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "tnum";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+}
+
+code,
+kbd,
+pre,
+samp,
+.font-mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "ss01", "ss02", "tnum";
+}
+
+::selection {
+  background: var(--color-selection);
+  color: var(--color-text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* Subtle scrollbar */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-surface-3);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border);
+}

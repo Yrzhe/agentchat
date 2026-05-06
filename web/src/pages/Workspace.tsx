@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { client } from "@/lib/edgespark";
+import { Sidebar } from "@/components/Sidebar";
 
 interface Agent {
   id: string;
@@ -30,7 +31,11 @@ interface Feed {
 
 function fmtTime(epoch: number): string {
   const ms = epoch < 1e12 ? epoch * 1000 : epoch;
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date(ms).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 function fmtAgo(epoch: number): string {
@@ -42,7 +47,39 @@ function fmtAgo(epoch: number): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-export function Workspace({ workspaceId }: { workspaceId: string }) {
+function statusDot(s: string): string {
+  if (s === "online") return "bg-[var(--color-online)]";
+  if (s === "idle") return "bg-[var(--color-idle)]";
+  return "bg-[var(--color-offline)]";
+}
+
+function agentInitials(a: Agent | undefined): string {
+  if (!a) return "??";
+  const src = a.device_name || a.framework || a.id;
+  return src.replace(/[^a-zA-Z0-9]/g, "").slice(0, 2).toUpperCase() || "??";
+}
+
+function parseBody(body: string):
+  | { kind: "text"; text: string }
+  | { kind: "code"; pre: string; lang: string; code: string; post: string } {
+  const m = body.match(/^([\s\S]*?)```([\w+-]*)\n([\s\S]*?)```([\s\S]*)$/);
+  if (!m) return { kind: "text", text: body };
+  return {
+    kind: "code",
+    pre: m[1].trim(),
+    lang: m[2] || "text",
+    code: m[3].replace(/\n$/, ""),
+    post: m[4].trim(),
+  };
+}
+
+interface WorkspaceProps {
+  workspaceId: string;
+  user: { email: string; name?: string | null };
+  signOut: () => void;
+}
+
+export function Workspace({ workspaceId, user, signOut }: WorkspaceProps) {
   const [feed, setFeed] = useState<Feed | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [body, setBody] = useState("");
@@ -51,7 +88,6 @@ export function Workspace({ workspaceId }: { workspaceId: string }) {
   const [sendError, setSendError] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const lastMessageIdRef = useRef<string | null>(null);
-
   const etagRef = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -60,7 +96,6 @@ export function Workspace({ workspaceId }: { workspaceId: string }) {
       if (etagRef.current) headers["If-None-Match"] = etagRef.current;
       const res = await client.api.fetch(`/api/w/${workspaceId}/feed`, { headers });
       if (res.status === 304) {
-        // Nothing changed since last poll — keep current feed.
         setError(null);
         return;
       }
@@ -89,7 +124,6 @@ export function Workspace({ workspaceId }: { workspaceId: string }) {
     return () => clearInterval(iv);
   }, [refresh]);
 
-  // Auto-scroll to bottom when new messages arrive (and we're already near bottom)
   useEffect(() => {
     if (!feed?.messages.length) return;
     const newest = feed.messages[0];
@@ -117,7 +151,6 @@ export function Workspace({ workspaceId }: { workspaceId: string }) {
         throw new Error(err.message || err.error || `HTTP ${res.status}`);
       }
       setBody("");
-      // Don't clear `to` — user might send several directs in a row.
       await refresh();
     } catch (e) {
       setSendError((e as Error).message);
@@ -126,97 +159,229 @@ export function Workspace({ workspaceId }: { workspaceId: string }) {
     }
   }
 
-  if (error) {
+  const onlineCount = useMemo(
+    () => (feed?.agents ?? []).filter((a) => a.status === "online").length,
+    [feed?.agents],
+  );
+
+  if (error && !feed) {
     return (
-      <main className="min-h-screen bg-neutral-950 text-neutral-100 flex items-center justify-center">
-        <div className="max-w-md text-center px-6">
-          <p className="text-red-400 mb-4">{error}</p>
-          <a href="/" className="text-blue-400 hover:text-blue-300">← Back to dashboard</a>
+      <main className="flex min-h-screen items-center justify-center px-6">
+        <div className="max-w-sm rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-4 text-center">
+          <p className="text-[13px] text-[var(--color-error)]">{error}</p>
+          <a
+            href="/"
+            className="mt-3 inline-block text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          >
+            ← Back to workspaces
+          </a>
         </div>
       </main>
     );
   }
   if (!feed) {
-    return <main className="min-h-screen bg-neutral-950 text-neutral-500 flex items-center justify-center">Loading…</main>;
+    return (
+      <main className="flex min-h-screen items-center justify-center text-[13px] text-[var(--color-text-faint)]">
+        Loading…
+      </main>
+    );
   }
 
-  function senderLabel(m: Message): string {
+  function senderInfo(m: Message): {
+    initials: string;
+    label: string;
+    framework: string | null;
+    sub: string | null;
+    isAgent: boolean;
+  } {
     if (m.sender_agent_id) {
       const a = feed!.agents.find((x) => x.id === m.sender_agent_id);
-      const dev = a?.device_name ? ` @ ${a.device_name}` : "";
-      const fw = a?.framework ? ` (${a.framework})` : "";
-      return `agent ${m.sender_agent_id.slice(0, 8)}${dev}${fw}`;
+      return {
+        initials: agentInitials(a),
+        label: a?.framework ?? `agent ${m.sender_agent_id.slice(0, 6)}`,
+        framework: a?.framework ?? null,
+        sub: a?.device_name ?? m.sender_agent_id.slice(0, 8),
+        isAgent: true,
+      };
     }
     if (m.sender_user_id) {
       const isMe = m.sender_user_id === feed!.currentUserId;
-      return `${m.sender_user_name || m.sender_user_email || m.sender_user_id.slice(0, 8)}${isMe ? " (you)" : ""}`;
+      const name = m.sender_user_name || m.sender_user_email || m.sender_user_id.slice(0, 8);
+      return {
+        initials: name.replace(/[^a-zA-Z0-9]/g, "").slice(0, 2).toUpperCase() || "··",
+        label: name,
+        framework: null,
+        sub: isMe ? "you" : null,
+        isAgent: false,
+      };
     }
-    return "system";
+    return { initials: "··", label: "system", framework: null, sub: null, isAgent: false };
   }
 
-  function statusColor(s: string): string {
-    if (s === "online") return "bg-green-500";
-    if (s === "idle") return "bg-orange-500";
-    return "bg-neutral-500";
-  }
+  const railBelow = (
+    <div>
+      <div className="mb-1 px-2 text-[10px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-faint)]">
+        Current
+      </div>
+      <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-2">
+        <div className="truncate text-[13px] font-medium text-[var(--color-text)]">
+          {feed.workspace?.name ?? "workspace"}
+        </div>
+        <code className="font-mono mt-0.5 block text-[10px] text-[var(--color-text-faint)]">
+          {workspaceId}
+        </code>
+        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-online)]" />
+          Live · 5s poll
+        </div>
+      </div>
+    </div>
+  );
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col">
-      <header className="border-b border-neutral-800 px-6 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <a href="/" className="text-neutral-400 hover:text-white text-sm">← Dashboard</a>
-          <div>
-            <h1 className="text-lg font-semibold">{feed.workspace?.name ?? workspaceId}</h1>
-            <div className="text-xs text-neutral-500">
-              <code>{workspaceId}</code>
-              {feed.workspace?.origin && <> · {feed.workspace.origin}</>}
-            </div>
-          </div>
-        </div>
-        <div className="text-xs text-neutral-500">live · refreshes every 5s</div>
-      </header>
+    <main className="flex h-screen overflow-hidden">
+      <Sidebar user={user} signOut={signOut} active="workspaces" belowNav={railBelow} />
 
-      <div className="flex-1 grid grid-cols-1 md:grid-cols-[1fr_280px] overflow-hidden">
-        {/* Messages column */}
-        <div className="flex flex-col overflow-hidden">
-          <div ref={messagesRef} className="flex-1 overflow-y-auto px-6 py-4 flex flex-col-reverse">
-            {feed.messages.length === 0 ? (
-              <div className="text-neutral-500 text-sm text-center py-12">
-                No messages yet. Send the first one below ↓
-              </div>
-            ) : (
-              feed.messages.map((m) => (
-                <div
-                  key={m.id}
-                  className={`mb-3 px-4 py-2 rounded-lg ${
-                    m.kind === "broadcast" ? "bg-neutral-900" : "bg-yellow-950/40 border border-yellow-900/40"
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1 text-xs text-neutral-500">
-                    <span>{senderLabel(m)}</span>
-                    <span>·</span>
-                    <span>{fmtTime(m.created_at)}</span>
-                    <span>·</span>
-                    <span className="uppercase tracking-wide">{m.kind}</span>
-                  </div>
-                  <div className="text-sm text-neutral-100 whitespace-pre-wrap break-words">{m.body}</div>
-                </div>
-              ))
+      {/* Main */}
+      <section className="flex flex-1 flex-col overflow-hidden">
+        <header className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg)] px-6 py-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="truncate text-[15px] font-semibold tracking-tight text-[var(--color-text)]">
+                {feed.workspace?.name ?? workspaceId}
+              </h1>
+              <code className="font-mono rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] px-1.5 py-0.5 text-[11px] text-[var(--color-text-muted)]">
+                {workspaceId}
+              </code>
+            </div>
+            {feed.workspace?.origin && (
+              <code className="font-mono mt-0.5 block max-w-[60ch] truncate text-[11px] text-[var(--color-text-faint)]">
+                {feed.workspace.origin}
+              </code>
             )}
           </div>
+          <div className="flex items-center gap-3 text-[12px] text-[var(--color-text-muted)]">
+            <span className="font-mono tabular-nums">{feed.messages.length} msgs</span>
+            <span className="text-[var(--color-border)]">·</span>
+            <span className="font-mono tabular-nums">
+              <span className="text-[var(--color-online)]">●</span> {onlineCount}/{feed.agents.length} online
+            </span>
+          </div>
+        </header>
 
-          {/* Send form */}
-          <form onSubmit={send} className="border-t border-neutral-800 p-4 bg-neutral-925">
-            <div className="flex gap-2 mb-2">
-              <input
-                type="text"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-                placeholder="To (optional): @<agent-id-prefix>, leave blank for broadcast"
-                className="flex-1 bg-neutral-900 border border-neutral-800 rounded px-3 py-1.5 text-sm text-neutral-100 placeholder-neutral-500"
-              />
+        {/* Agents strip */}
+        {feed.agents.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto border-b border-[var(--color-border)] bg-[var(--color-surface-2)] px-6 py-1.5">
+            {feed.agents.map((a) => (
+              <div
+                key={a.id}
+                title={`${a.framework} · ${a.device_name ?? "—"} · last seen ${fmtAgo(a.last_heartbeat_at)}`}
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-0.5 text-[11px]"
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${statusDot(a.status)}`} />
+                <span className="font-mono text-[var(--color-text-faint)]">
+                  {agentInitials(a)}
+                </span>
+                <span className="text-[var(--color-text-soft)]">{a.framework}</span>
+                {a.device_name && (
+                  <span className="font-mono text-[var(--color-text-faint)]">@{a.device_name}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Messages */}
+        <div ref={messagesRef} className="flex flex-1 flex-col-reverse overflow-y-auto px-6 py-4">
+          {feed.messages.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-[var(--color-border-strong)] bg-[var(--color-surface)] px-6 py-12 text-center">
+              <p className="text-[14px] font-medium text-[var(--color-text)]">No messages yet</p>
+              <p className="mx-auto mt-1 max-w-[52ch] text-[13px] text-[var(--color-text-muted)]">
+                Send the first one below — it lands in any connected agent's inbox immediately.
+              </p>
             </div>
-            <div className="flex gap-2 items-start">
+          ) : (
+            feed.messages.map((m) => {
+              const info = senderInfo(m);
+              const parsed = parseBody(m.body);
+              const isMention = m.kind === "direct";
+              return (
+                <div
+                  key={m.id}
+                  className={`group mb-2 flex gap-3 rounded-md px-3 py-2 transition-colors hover:bg-[var(--color-surface-2)] ${
+                    isMention
+                      ? "border-l-2 border-[var(--color-mention)] bg-[var(--color-mention-bg)] -ml-[2px]"
+                      : ""
+                  }`}
+                >
+                  <span className="font-mono mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--color-surface-3)] text-[11px] font-semibold text-[var(--color-text-soft)]">
+                    {info.initials}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-[13px] font-semibold text-[var(--color-text)]">
+                        {info.label}
+                      </span>
+                      {info.sub && (
+                        <code className="font-mono text-[11px] text-[var(--color-text-faint)]">
+                          {info.sub}
+                        </code>
+                      )}
+                      {isMention && (
+                        <span className="rounded bg-[var(--color-mention-bg)] px-1.5 text-[10px] font-medium text-[var(--color-mention)]">
+                          mention
+                        </span>
+                      )}
+                      <time className="font-mono ml-auto text-[11px] tabular-nums text-[var(--color-text-faint)]">
+                        {fmtTime(m.created_at)}
+                      </time>
+                    </div>
+                    {parsed.kind === "text" ? (
+                      <p className="mt-0.5 whitespace-pre-wrap break-words text-[13.5px] leading-[1.55] text-[var(--color-text)]">
+                        {parsed.text}
+                      </p>
+                    ) : (
+                      <div className="mt-1 space-y-2">
+                        {parsed.pre && (
+                          <p className="whitespace-pre-wrap break-words text-[13.5px] leading-[1.55] text-[var(--color-text)]">
+                            {parsed.pre}
+                          </p>
+                        )}
+                        <div className="overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)]">
+                          <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-surface-2)] px-2.5 py-1">
+                            <code className="font-mono text-[10px] uppercase tracking-[0.04em] text-[var(--color-text-faint)]">
+                              {parsed.lang}
+                            </code>
+                          </div>
+                          <pre className="font-mono overflow-x-auto px-2.5 py-2 text-[12px] leading-[1.6] text-[var(--color-text)]">
+                            {parsed.code}
+                          </pre>
+                        </div>
+                        {parsed.post && (
+                          <p className="whitespace-pre-wrap break-words text-[13.5px] leading-[1.55] text-[var(--color-text)]">
+                            {parsed.post}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Composer */}
+        <form onSubmit={send} className="border-t border-[var(--color-border)] bg-[var(--color-surface-2)] px-6 py-3">
+          <div className="overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] focus-within:border-[var(--color-accent)]/50">
+            <input
+              type="text"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              placeholder="To (optional): @<agent-id-prefix>, blank = broadcast"
+              className="font-mono w-full border-b border-[var(--color-border)] bg-transparent px-3 py-1.5 text-[12px] text-[var(--color-text)] placeholder-[var(--color-text-faint)] outline-none"
+            />
+            <div className="flex items-end gap-2 px-3 py-2">
               <textarea
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
@@ -225,58 +390,25 @@ export function Workspace({ workspaceId }: { workspaceId: string }) {
                     void send(e);
                   }
                 }}
-                placeholder="Message agents in this workspace. Use @<agent-id-prefix> in the body to mention specific agents. ⌘/Ctrl-Enter to send."
+                placeholder="Message agents in this workspace. ⌘/Ctrl-Enter to send."
                 rows={2}
-                className="flex-1 bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm text-neutral-100 placeholder-neutral-500 resize-y"
                 disabled={sending}
+                className="flex-1 resize-y bg-transparent text-[13.5px] leading-[1.55] text-[var(--color-text)] placeholder-[var(--color-text-faint)] outline-none"
               />
               <button
                 type="submit"
                 disabled={sending || !body.trim()}
-                className="bg-blue-600 hover:bg-blue-500 disabled:bg-neutral-800 disabled:text-neutral-600 text-white px-4 py-2 rounded text-sm font-medium"
+                className="rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-[var(--color-accent-hover)] disabled:bg-[var(--color-surface-3)] disabled:text-[var(--color-text-faint)]"
               >
                 {sending ? "Sending…" : "Send"}
               </button>
             </div>
-            {sendError && <div className="text-red-400 text-xs mt-2">{sendError}</div>}
-          </form>
-        </div>
-
-        {/* Sidebar: agents */}
-        <aside className="border-l border-neutral-800 overflow-y-auto px-4 py-4 hidden md:block">
-          <h2 className="text-sm font-semibold text-neutral-300 mb-3">
-            Agents ({feed.agents.length})
-          </h2>
-          {feed.agents.length === 0 ? (
-            <div className="text-xs text-neutral-500">
-              No agents registered yet. Run the installer in this project's git repo.
-            </div>
-          ) : (
-            <ul className="space-y-3">
-              {feed.agents.map((a) => (
-                <li key={a.id} className="text-sm">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2 h-2 rounded-full ${statusColor(a.status)}`} />
-                    <code className="text-xs text-neutral-300">{a.id.slice(0, 8)}</code>
-                  </div>
-                  <div className="text-xs text-neutral-500 ml-4 mt-0.5">
-                    {a.framework}
-                    {a.device_name && <> · {a.device_name}</>}
-                  </div>
-                  <div className="text-xs text-neutral-600 ml-4">
-                    last seen {fmtAgo(a.last_heartbeat_at)}
-                  </div>
-                  {a.host_session_id && (
-                    <div className="text-xs text-neutral-600 ml-4 truncate" title={a.host_session_id}>
-                      session: <code>{a.host_session_id.slice(0, 12)}</code>
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
+          </div>
+          {sendError && (
+            <div className="mt-1.5 text-[12px] text-[var(--color-error)]">{sendError}</div>
           )}
-        </aside>
-      </div>
+        </form>
+      </section>
     </main>
   );
 }
